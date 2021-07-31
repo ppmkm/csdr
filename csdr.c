@@ -268,8 +268,8 @@ int clone_(int bufsize_param)
 #define READ_R      read (STDIN_FILENO, input_buffer, sizeof(float) * the_bufsize)
 #define FREAD_C     fread (input_buffer,    sizeof(float)*2,    the_bufsize, stdin)
 #define READ_C      read (STDIN_FILENO, input_buffer,    sizeof(float)*2 * the_bufsize)
-#define FWRITE_R    fwrite (output_buffer,  sizeof(float),      the_bufsize, stdout)
-#define FWRITE_C    fwrite (output_buffer,  sizeof(float)*2,    the_bufsize, stdout)
+//#define FWRITE_R    fwrite (output_buffer,  sizeof(float),      the_bufsize, stdout)
+//#define FWRITE_C    fwrite (output_buffer,  sizeof(float)*2,    the_bufsize, stdout)
 #define WRITE_R     write (STDOUT_FILENO, output_buffer, sizeof(float) *the_bufsize)
 #define WRITE_C     write (STDOUT_FILENO, output_buffer, sizeof(float)*2 * the_bufsize)
 #define FEOF_CHECK  if(feof(stdin)) return 0
@@ -739,7 +739,7 @@ int main(int argc, char *argv[])
             FEOF_CHECK;
             if(!FREAD_C) break;
             starting_phase=shift_math_cc((complexf*)input_buffer, (complexf*)output_buffer, the_bufsize, rate, starting_phase);
-            FWRITE_C;
+            WRITE_C;
             TRY_YIELD;
         }
         return 0;
@@ -970,7 +970,7 @@ int main(int argc, char *argv[])
             FEOF_CHECK;
             FREAD_R;
             dcp=dcblock_ff(input_buffer, output_buffer, the_bufsize, 0, dcp);
-            FWRITE_R;
+            WRITE_R;
             TRY_YIELD;
         }
     }
@@ -1003,7 +1003,7 @@ int main(int argc, char *argv[])
             FREAD_C;
             if(feof(stdin)) return 0;
             last_phase=fmdemod_atan_cf((complexf*)input_buffer, output_buffer, the_bufsize, last_phase);
-            FWRITE_R;
+            WRITE_R;
             TRY_YIELD;
         }
     }
@@ -1018,7 +1018,7 @@ int main(int argc, char *argv[])
             FEOF_CHECK;
             FREAD_C;
             last_sample=fmdemod_quadri_cf((complexf*)input_buffer, output_buffer, the_bufsize, temp_f, last_sample);
-            FWRITE_R;
+            WRITE_R;
             TRY_YIELD;
         }
     }
@@ -1033,7 +1033,7 @@ int main(int argc, char *argv[])
             FEOF_CHECK;
             FREAD_C;
             last_sample=fmdemod_quadri_novect_cf((complexf*)input_buffer, output_buffer, the_bufsize, last_sample);
-            FWRITE_R;
+            WRITE_R;
             TRY_YIELD;
         }
     }
@@ -1052,7 +1052,7 @@ int main(int argc, char *argv[])
             FEOF_CHECK;
             FREAD_R;
             last_output=deemphasis_wfm_ff(input_buffer, output_buffer, the_bufsize, tau, sample_rate, last_output);
-            FWRITE_R;
+            WRITE_R;
             TRY_YIELD;
         }
     }
@@ -1120,7 +1120,7 @@ int main(int argc, char *argv[])
             FEOF_CHECK;
             FREAD_C;
             amdemod_cf((complexf*)input_buffer, output_buffer, the_bufsize);
-            FWRITE_R;
+            WRITE_R;
             TRY_YIELD;
         }
     }
@@ -1132,7 +1132,7 @@ int main(int argc, char *argv[])
             FEOF_CHECK;
             FREAD_C;
             amdemod_estimator_cf((complexf*)input_buffer, output_buffer, the_bufsize, 0., 0.);
-            FWRITE_R;
+            WRITE_R;
             TRY_YIELD;
         }
     }
@@ -1451,7 +1451,7 @@ int main(int argc, char *argv[])
                 FEOF_CHECK;
                 FREAD_R;
                 state = agc_ff(input_buffer, output_buffer, the_bufsize, params, state);
-                FWRITE_R;
+                WRITE_R;
                 TRY_YIELD;
             }
         } else if (!strcmp(mode, "agc_s16")) {
@@ -2209,7 +2209,7 @@ int main(int argc, char *argv[])
                 iof(output_buffer,i)=input_buffer[i];
                 qof(output_buffer,i)=q_value;
             }
-            FWRITE_C;
+            WRITE_C;
             TRY_YIELD;
         }
     }
@@ -2247,7 +2247,7 @@ int main(int argc, char *argv[])
             FEOF_CHECK;
             FREAD_C;
             add_dcoffset_cc((complexf*)input_buffer, (complexf*)output_buffer, the_bufsize);
-            FWRITE_C;
+            WRITE_C;
             TRY_YIELD;
         }
     }
@@ -2261,7 +2261,7 @@ int main(int argc, char *argv[])
             FEOF_CHECK;
             FREAD_R;
             last_phase = fmmod_fc(input_buffer, (complexf*)output_buffer, the_bufsize, last_phase);
-            FWRITE_C;
+            WRITE_C;
             TRY_YIELD;
         }
     }
@@ -2279,7 +2279,7 @@ int main(int argc, char *argv[])
             FEOF_CHECK;
             FREAD_C;
             fixed_amplitude_cc((complexf*)input_buffer, (complexf*)output_buffer, the_bufsize, new_amplitude);
-            FWRITE_C;
+            WRITE_C;
             TRY_YIELD;
         }
     }
@@ -2825,7 +2825,7 @@ int main(int argc, char *argv[])
             FEOF_CHECK;
             fread((unsigned char*)input_buffer, sizeof(unsigned char), the_bufsize, stdin);
             psk_modulator_u8_c((unsigned char*)input_buffer, (complexf*)output_buffer, the_bufsize, n_psk);
-            FWRITE_C;
+            WRITE_C;
             TRY_YIELD;
         }
     }
@@ -3019,7 +3019,7 @@ int main(int argc, char *argv[])
                     fwrite(buffer_output_dphase, sizeof(float), the_bufsize, file_output_dphase);
                     fwrite(buffer_output_nco, sizeof(complexf), the_bufsize, file_output_nco);
                 }
-                FWRITE_C; 
+                WRITE_C;
             }
             TRY_YIELD;
         }
@@ -3053,7 +3053,7 @@ int main(int argc, char *argv[])
             FEOF_CHECK;
             FREAD_C;
             simple_agc_cc((complexf*)input_buffer, (complexf*)output_buffer, the_bufsize, rate, reference, max_gain, &current_gain);
-            FWRITE_C;
+            WRITE_C;
             TRY_YIELD;
         }
     }
@@ -3214,7 +3214,7 @@ int main(int argc, char *argv[])
                 errhead(); fprintf(stderr, "SNR = %f dB\n", power_signal - power_noise);
             }
             add_ff(input_buffer, (float*)awgn_buffer, (float*)output_buffer, the_bufsize*2);
-            FWRITE_C;
+            WRITE_C;
             TRY_YIELD;
         }
     }
@@ -3228,7 +3228,7 @@ int main(int argc, char *argv[])
         {
             FEOF_CHECK;
             get_random_samples_f(output_buffer, the_bufsize, urandom);
-            FWRITE_R;
+            WRITE_R;
             TRY_YIELD;
         }
     }
@@ -3242,7 +3242,7 @@ int main(int argc, char *argv[])
         {
             FEOF_CHECK;
             get_random_gaussian_samples_c((complexf*)output_buffer, the_bufsize, urandom);
-            FWRITE_C;
+            WRITE_C;
             TRY_YIELD;
         }
     }
@@ -3443,7 +3443,7 @@ int main(int argc, char *argv[])
             FEOF_CHECK;
             FREAD_C;
             add_const_cc((complexf*)input_buffer, (complexf*)output_buffer, the_bufsize, x);
-            FWRITE_C;
+            WRITE_C;
             TRY_YIELD;
         }
         return 0;
@@ -3534,7 +3534,7 @@ int main(int argc, char *argv[])
                     obufptr+=current_size*2;
                     remain-=current_size;
                 }
-                FWRITE_C;
+                WRITE_C;
                 if(read_fifo_ctl(fd,"%g\n",&rate)) break;
                 TRY_YIELD;
             }
