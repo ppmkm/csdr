@@ -485,8 +485,8 @@ int main(int argc, char *argv[])
         char** fifo_buffers = (char**)malloc(sizeof(char*)*fifo_num_buffers);
         for(int i=0;i<fifo_num_buffers;i++) fifo_buffers[i]=(char*)malloc(sizeof(char)*fifo_buffer_size);
 
-        SET_NONBLOCK(STDIN_FILENO);
-        SET_NONBLOCK(STDOUT_FILENO);
+//        SET_NONBLOCK(STDIN_FILENO);
+//        SET_NONBLOCK(STDOUT_FILENO);
 
         fd_set read_fds;
         FD_ZERO(&read_fds);
