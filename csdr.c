@@ -215,8 +215,9 @@ int bigbufs = 0;
 //change on on 2015-08-29: we don't yield at all. fread() will do it if it blocks
 #define YIELD_EVERY_N_TIMES 3
 //#define TRY_YIELD if(++yield_counter%YIELD_EVERY_N_TIMES==0) sched_yield()
-#define TRY_YIELD fflush(stdout);sched_yield()
+//#define TRY_YIELD fflush(stdout);sched_yield()
 //unsigned yield_counter=0;
+#define TRY_YIELD
 
 char **argv_global;
 int argc_global;
@@ -264,9 +265,13 @@ int clone_(int bufsize_param)
 #define FREAD_S16   fread (input_buffer,    sizeof(short),      the_bufsize, stdin)
 #define FWRITE_S16  fwrite (output_buffer,  sizeof(short),      the_bufsize, stdout)
 #define FREAD_R     fread (input_buffer,    sizeof(float),      the_bufsize, stdin)
+#define READ_R      read (STDIN_FILENO, input_buffer, sizeof(float) * the_bufsize)
 #define FREAD_C     fread (input_buffer,    sizeof(float)*2,    the_bufsize, stdin)
+#define READ_C      read (STDIN_FILENO, input_buffer,    sizeof(float)*2 * the_bufsize)
 #define FWRITE_R    fwrite (output_buffer,  sizeof(float),      the_bufsize, stdout)
 #define FWRITE_C    fwrite (output_buffer,  sizeof(float)*2,    the_bufsize, stdout)
+#define WRITE_R     write (STDOUT_FILENO, output_buffer, sizeof(float) *the_bufsize)
+#define WRITE_C     write (STDOUT_FILENO, output_buffer, sizeof(float)*2 * the_bufsize)
 #define FEOF_CHECK  if(feof(stdin)) return 0
 //#define BIG_FREAD_C fread(input_buffer, sizeof(float)*2, BIG_BUFSIZE, stdin)
 //#define BIG_FWRITE_C fwrite(output_buffer, sizeof(float)*2, BIG_BUFSIZE, stdout)
@@ -561,7 +566,7 @@ int main(int argc, char *argv[])
             FEOF_CHECK;
             fread(buffer_u8, sizeof(unsigned char), the_bufsize, stdin);
             convert_u8_f(buffer_u8, output_buffer, the_bufsize);
-            FWRITE_R;
+            WRITE_R;
             TRY_YIELD;
         }
     }
@@ -571,7 +576,7 @@ int main(int argc, char *argv[])
         for(;;)
         {
             FEOF_CHECK;
-            FREAD_R;
+            READ_R;
             convert_f_u8(input_buffer, buffer_u8, the_bufsize);
             fwrite(buffer_u8, sizeof(unsigned char), the_bufsize, stdout);
             TRY_YIELD;
@@ -585,7 +590,7 @@ int main(int argc, char *argv[])
             FEOF_CHECK;
             fread((signed char*)buffer_u8, sizeof(signed char), the_bufsize, stdin);
             convert_s8_f((signed char*)buffer_u8, output_buffer, the_bufsize);
-            FWRITE_R;
+            WRITE_R;
             TRY_YIELD;
         }
     }
@@ -595,7 +600,7 @@ int main(int argc, char *argv[])
         for(;;)
         {
             FEOF_CHECK;
-            FREAD_R;
+            READ_R;
             convert_f_s8(input_buffer, (signed char*)buffer_u8, the_bufsize);
             fwrite((signed char*)buffer_u8, sizeof(signed char), the_bufsize, stdout);
             TRY_YIELD;
@@ -607,7 +612,7 @@ int main(int argc, char *argv[])
         for(;;)
         {
             FEOF_CHECK;
-            FREAD_R;
+            READ_R;
             convert_f_i16(input_buffer, buffer_i16, the_bufsize);
             fwrite(buffer_i16, sizeof(short), the_bufsize, stdout);
             TRY_YIELD;
@@ -621,7 +626,7 @@ int main(int argc, char *argv[])
             FEOF_CHECK;
             fread(buffer_i16, sizeof(short), the_bufsize, stdin);
             convert_i16_f(buffer_i16, output_buffer, the_bufsize);
-            FWRITE_R;
+            WRITE_R;
             TRY_YIELD;
         }
     }
@@ -633,7 +638,7 @@ int main(int argc, char *argv[])
         for(;;)
         {
             FEOF_CHECK;
-            FREAD_R;
+            READ_R;
             convert_f_s24(input_buffer, s24buffer, the_bufsize, bigendian);
             fwrite(s24buffer, sizeof(unsigned char)*3, the_bufsize, stdout);
             TRY_YIELD;
@@ -649,7 +654,7 @@ int main(int argc, char *argv[])
             FEOF_CHECK;
             fread(s24buffer, sizeof(unsigned char)*3, the_bufsize, stdin);
             convert_s24_f(s24buffer, output_buffer, the_bufsize, bigendian);
-            FWRITE_R;
+            WRITE_R;
             TRY_YIELD;
         }
     }
@@ -659,9 +664,9 @@ int main(int argc, char *argv[])
         for(;;)
         {
             FEOF_CHECK;
-            FREAD_C;
+            READ_C;
             for(int i=0;i<the_bufsize;i++) output_buffer[i]=iof(input_buffer,i);
-            FWRITE_R;
+            WRITE_R;
             TRY_YIELD;
         }
     }
@@ -671,7 +676,7 @@ int main(int argc, char *argv[])
         for(;;)
         {
             FEOF_CHECK;
-            FREAD_R;
+            READ_R;
             clipdetect_ff(input_buffer, the_bufsize);
             fwrite(input_buffer, sizeof(float), the_bufsize, stdout);
             TRY_YIELD;
@@ -686,9 +691,9 @@ int main(int argc, char *argv[])
         for(;;)
         {
             FEOF_CHECK;
-            FREAD_R;
+            READ_R;
             gain_ff(input_buffer, output_buffer, the_bufsize, gain);
-            FWRITE_R;
+            WRITE_R;
             TRY_YIELD;
         }
     }
@@ -700,9 +705,9 @@ int main(int argc, char *argv[])
         for(;;)
         {
             FEOF_CHECK;
-            FREAD_R;
+            READ_R;
             limit_ff(input_buffer, output_buffer, the_bufsize, max_amplitude);
-            FWRITE_R;
+            WRITE_R;
             TRY_YIELD;
         }
     }
@@ -762,7 +767,7 @@ int main(int argc, char *argv[])
             FEOF_CHECK;
             if(!FREAD_C) break;
             starting_phase=shift_table_cc((complexf*)input_buffer, (complexf*)output_buffer, the_bufsize, rate, table_data, starting_phase);
-            FWRITE_C;
+            WRITE_C;
             TRY_YIELD;
         }
         return 0;
@@ -797,8 +802,7 @@ int main(int argc, char *argv[])
             float* obufptr;
             for(;;)
             {
-                FEOF_CHECK;
-                if(!FREAD_C) break;
+                if(!READ_C) break;
                 remain=the_bufsize;
                 ibufptr=input_buffer;
                 obufptr=output_buffer;
@@ -810,7 +814,7 @@ int main(int argc, char *argv[])
                     obufptr+=current_size*2;
                     remain-=current_size;
                 }
-                FWRITE_C;
+                WRITE_C;
                 if(read_fifo_ctl(fd,"%g\n",&rate)) break;
                 TRY_YIELD;
             }
@@ -848,8 +852,7 @@ int main(int argc, char *argv[])
             float* obufptr;
             for(;;)
             {
-                FEOF_CHECK;
-                if(!FREAD_C) break;
+                if(!READ_C) break;
                 remain=the_bufsize;
                 ibufptr=input_buffer;
                 obufptr=output_buffer;
@@ -861,7 +864,7 @@ int main(int argc, char *argv[])
                     obufptr+=current_size*2;
                     remain-=current_size;
                 }
-                FWRITE_C;
+                WRITE_C;
                 if(read_fifo_ctl(fd,"%g\n",&rate)) break;
                 TRY_YIELD;
             }
@@ -887,8 +890,7 @@ int main(int argc, char *argv[])
         s.starting_phase=0;
         for(;;)
         {
-            FEOF_CHECK;
-            if(!FREAD_C) break;
+            if(!READ_C) break;
             s=decimating_shift_addition_cc((complexf*)input_buffer, (complexf*)output_buffer, the_bufsize, d, decimation, s);
             fwrite(output_buffer, sizeof(float)*2, s.output_size, stdout);
             TRY_YIELD;
@@ -925,8 +927,7 @@ int main(int argc, char *argv[])
             float* obufptr;
             for(;;)
             {
-                FEOF_CHECK;
-                if(!FREAD_C) break;
+                if(!READ_C) break;
                 remain=the_bufsize;
                 ibufptr=input_buffer;
                 obufptr=output_buffer;
@@ -938,7 +939,7 @@ int main(int argc, char *argv[])
                     obufptr+=current_size*2;
                     remain-=current_size;
                 }
-                FWRITE_C;
+                WRITE_C;
                 if(read_fifo_ctl(fd,"%g\n",&rate)) break;
                 TRY_YIELD;
             }
@@ -963,8 +964,7 @@ int main(int argc, char *argv[])
         if(!sendbufsize(initialize_buffers())) return -2;
         for(;;)
         {
-            FEOF_CHECK;
-            FREAD_R;
+            if(!READ_R) break;
             dcp=dcblock_ff(input_buffer, output_buffer, the_bufsize, 0, dcp);
             FWRITE_R;
             TRY_YIELD;
@@ -1444,8 +1444,7 @@ int main(int argc, char *argv[])
         if (!strcmp(mode, "agc_ff")) {
             for(;;)
             {
-                FEOF_CHECK;
-                FREAD_R;
+                if (!READ_R) break;
                 state = agc_ff(input_buffer, output_buffer, the_bufsize, params, state);
                 FWRITE_R;
                 TRY_YIELD;
