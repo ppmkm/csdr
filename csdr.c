@@ -802,8 +802,7 @@ int main(int argc, char *argv[])
             float* obufptr;
             for(;;)
             {
-                FEOF_CHECK;
-                if(!FREAD_C) break;
+                if(!READ_C) break;
                 remain=the_bufsize;
                 ibufptr=input_buffer;
                 obufptr=output_buffer;
