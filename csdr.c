@@ -835,7 +835,9 @@ int main(int argc, char *argv[])
         int fd;
         if(fd=init_fifo(argc,argv))
         {
+            fprintf(stderr,"shift_addfast fifo opened\n");
             while(!read_fifo_ctl(fd,"%g\n",&rate)) usleep(10000);
+            fprintf(stderr,"shift_addfast fifo read something \n");
         }
         else
         {
