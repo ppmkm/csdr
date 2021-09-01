@@ -608,14 +608,14 @@ int decimating_shift_addfast_cc(FILE *infile, FILE *outfile, int argc, char *arg
         int remain, current_size;
         float* ibufptr;
         complexf* obufptr;
+        //TODO decimate buffer
+        decimator.write_pointer = (complexf*) transient_buffer;
+        decimator.input_skip = the_bufsize;
         for(;;)
         {
             if(!FREAD_C) break;
             remain=the_bufsize;
             ibufptr=input_buffer;
-            //TODO decimate buffer
-            decimator.write_pointer = (complexf*) transient_buffer;
-            decimator.input_skip = the_bufsize;
             obufptr=decimator.write_pointer;
             while(remain)
             {
