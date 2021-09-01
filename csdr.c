@@ -603,7 +603,7 @@ int fft_adpcm_cu8(FILE *infile, FILE *outfile, int argc, char *argv[])
             log_ff(output2, output2, fft_size, add_db);
             //now fft_exchange_sides_ff from output2 to output
             memcpy(output,output2+fft_size/2,fft_size/2*sizeof(float));
-            memcpy(output+fft_size/2,output2,fft_size/2*sizeof(float));
+            memcpy(((float *)output)+fft_size/2,output2,fft_size/2*sizeof(float));
             memset(output2,0,sizeof(float)*fft_size);
             //now compress_fft_adpcm_f_u8 8192 from output to output2 and then to file
             memcpy(fft_compress_ima_adpcm_get_write_pointer(&job),output,fft_size*sizeof(float));
