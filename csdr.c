@@ -570,6 +570,9 @@ int decimating_shift_addfast_cc(FILE *infile, FILE *outfile, int argc, char *arg
         window=firdes_get_window_from_string(argv[4]);
     }
 
+    fprintf(stderr,"decimating shift_addfast starting..., rate: %g, factor: %d, transition_bw: %g \n", rate, factor, transition_bw );
+
+
     fir_decimate_t decimator = fir_decimate_init(factor, transition_bw, window);
 
     while (env_csdr_fixed_big_bufsize < decimator.taps_length*2) env_csdr_fixed_big_bufsize*=2; //temporary fix for buffer size if [transition_bw] is low
