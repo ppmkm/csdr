@@ -540,15 +540,18 @@ int fft_adpcm_cu8(FILE *infile, FILE *outfile, int argc, char *argv[])
     }
 
     bigbufs=1;
-    if(argc<=9) return badsyntax("need required parameters (add_db, avgnumber)");
+    if(argc<=8) return badsyntax("need required parameters (add_db, avgnumber)");
     float add_db=0;
     int avgnumber=0;
 
-    sscanf(argv[7],"%g",&add_db);
-    sscanf(argv[8],"%d",&avgnumber);
+    sscanf(argv[6],"%g",&add_db);
+    sscanf(argv[7],"%d",&avgnumber);
 
     add_db -= 10.0*log10(avgnumber);
 
+
+    fprintf(stderr,"fft_adpcm_cu8 starting..., fft_size: %d, out of : %d samples , add_db: %g, avgnumber %d \n", fft_size,
+    		 every_n_samples, add_db, avgnumber);
 
 
     if(!initialize_buffers(infile,outfile)) return -2;
