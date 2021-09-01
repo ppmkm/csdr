@@ -596,23 +596,21 @@ int fft_adpcm_cu8(FILE *infile, FILE *outfile, int argc, char *argv[])
         fft_execute(plan);
         //at this stage we have ready fft in output
         //now logaveragepower_cf -70 8192 3
-        if (n = 0 ) {
-            memset(output2,0,sizeof(float)*fft_size);
-        }
         if (n < avgnumber) {
              accumulate_power_cf((complexf*)output, output2, fft_size);
-             n++;
         } else {
         	n = 0; //reset averaging
             log_ff(output2, output2, fft_size, add_db);
             //now fft_exchange_sides_ff from output2 to output
             memcpy(output,output2+fft_size/2,fft_size/2*sizeof(float));
             memcpy(output+fft_size/2,output2,fft_size/2*sizeof(float));
+            memset(output2,0,sizeof(float)*fft_size);
             //now compress_fft_adpcm_f_u8 8192 from output to output2 and then to file
             memcpy(fft_compress_ima_adpcm_get_write_pointer(&job),output,fft_size*sizeof(float));
             fft_compress_ima_adpcm(&job, output_u8);
             fwrite(output_u8, sizeof(unsigned char), job.real_data_size/2, outfile);
         }
+        n++;
     }
     fft_compress_ima_adpcm_free(&job);
 
