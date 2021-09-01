@@ -610,7 +610,7 @@ int decimating_shift_addfast_cc(FILE *infile, FILE *outfile, int argc, char *arg
         errhead();
         fprintf(stderr,"reinitialized to %g\n",rate);
         int remain, current_size;
-        float* ibufptr;
+        complexf* ibufptr;
         complexf* obufptr;
         //TODO decimate buffer
         decimator.write_pointer = (complexf*) decimator_buffer;
@@ -626,8 +626,8 @@ int decimating_shift_addfast_cc(FILE *infile, FILE *outfile, int argc, char *arg
             {
                 current_size=(remain>1024)?1024:remain;
                 starting_phase=shift_addfast_cc((complexf*)ibufptr, obufptr, current_size, &data, starting_phase);
-                ibufptr+=current_size*2;
-                obufptr+=current_size*2;
+                ibufptr+=current_size;
+                obufptr+=current_size;
                 remain-=current_size;
             }
             //now we have addfast output in addfast_output_buffer
