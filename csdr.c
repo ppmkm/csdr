@@ -557,14 +557,14 @@ int decimating_shift_addfast_cc(FILE *infile, FILE *outfile, int argc, char *arg
         fprintf(stderr,"decimating shift_addfast fifo opened\n");
         while(!read_fifo_ctl(fd,"%g\n",&rate)) usleep(10000);
         fprintf(stderr,"shift_addfast fifo read something \n");
-        if(argc<=7) return badsyntax("need required parameter (--fifo fifo, decimation, transition_bw, window)");
-        sscanf(argv[3],"%d",&factor);
-        sscanf(argv[4],"%g",&transition_bw);
-        window=firdes_get_window_from_string(argv[5]);
+        if(argc<7) return badsyntax("need required parameter (--fifo fifo, decimation, transition_bw, window)");
+        sscanf(argv[4],"%d",&factor);
+        sscanf(argv[5],"%g",&transition_bw);
+        window=firdes_get_window_from_string(argv[6]);
     }
     else
     {
-        if(argc<=6) return badsyntax("need required parameter (rate, decimation, transition_bw, window)");
+        if(argc<6) return badsyntax("need required parameter (rate, decimation, transition_bw, window)");
         sscanf(argv[2],"%d",&factor);
         sscanf(argv[3],"%g",&transition_bw);
         window=firdes_get_window_from_string(argv[4]);
