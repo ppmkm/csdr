@@ -185,6 +185,7 @@ char usage[]=
 "    fft_one_side_ff <fft_size>\n"
 "    convert_f_samplerf <wait_for_this_sample>\n"
 "    add_dcoffset_cc\n"
+"    decimating_shift_addfast_cc (--fifo fifo)|rate , decimation, transition_bw, window "
 #ifdef LIBCSDR_GPL
 "    fastddc_fwd_cc <decimation> [transition_bw [window]]\n"
 "    fastddc_inv_cc <shift_rate> <decimation> [transition_bw [window]]\n"
@@ -509,10 +510,110 @@ int parse_env()
  *                                                          | csdr compress_fft_adpcm_f_u8 8192
  *
  * phase 1: monolithing paraterless ops:
- * 0. decimating_addfast_cc : shift_addfast_cc+fir_decimate_cc
+ * 0. decimating_addfast_cc : shift_addfast_cc+fir_decimate_cc DONE
  * 1. audio part: realagcadpcm_cu8:  realpart_cf+agc_ff+convert_f_s16+encode_ima_adpcm_i16_u8
  * 2. fft part: fft_adpcm_cu8: fft_cc +logaveragepower+fft_exchange_sides+compress_adpcm_f_u8
  */
+
+
+
+int fft_adpcm_cu8(FILE *infile, FILE *outfile, int argc, char *argv[])
+{
+	/* at this stage we have already opened input FILE *infile, FILE *outfile
+	 *
+	 */
+    if(argc<=3) return badsyntax("need required parameters (fft_size, out_of_every_n_samples)");
+    int fft_size;
+    sscanf(argv[2],"%d",&fft_size);
+    if(log2n(fft_size)==-1) return badsyntax("fft_size should be power of 2");
+    int every_n_samples;
+    sscanf(argv[3],"%d",&every_n_samples);
+    int benchmark=0;
+    window_t window = WINDOW_DEFAULT;
+    if(argc>=5)
+    {
+        window=firdes_get_window_from_string(argv[4]);
+    }
+    if(argc>=6)
+    {
+        benchmark|=!strcmp("--benchmark",argv[5]);
+    }
+
+    bigbufs=1;
+    if(argc<=9) return badsyntax("need required parameters (add_db, avgnumber)");
+    float add_db=0;
+    int avgnumber=0;
+
+    sscanf(argv[7],"%g",&add_db);
+    sscanf(argv[8],"%d",&avgnumber);
+
+    add_db -= 10.0*log10(avgnumber);
+
+
+
+    if(!initialize_buffers(infile,outfile)) return -2;
+
+    //make FFT plan
+    complexf* input=(complexf*)fft_malloc(sizeof(complexf)*fft_size);
+    complexf* windowed=(complexf*)fft_malloc(sizeof(complexf)*fft_size);
+    complexf* output=(complexf*)fft_malloc(sizeof(complexf)*fft_size);
+    if(benchmark) { errhead(); fprintf(stderr,"benchmarking..."); }
+    fft_plan_t* plan=make_fft_c2c(fft_size, windowed, output, 1, benchmark);
+    if(benchmark) fprintf(stderr," done\n");
+    float *windowt;
+    windowt = precalculate_window(fft_size, window);
+    int n = 0;
+    float *output2 = malloc(sizeof(float) * fft_size);
+    fft_compress_ima_adpcm_t job;
+    fft_compress_ima_adpcm_init(&job, fft_size);
+    unsigned char* output_u8 = (unsigned char*) malloc(sizeof(unsigned char) * (job.real_data_size / 2));
+
+    sendbufsize(job.real_data_size,outfile);
+
+    for(;;)
+    {
+        FEOF_CHECK;
+        if(every_n_samples>fft_size)
+        {
+            fread(input, sizeof(complexf), fft_size, infile);
+            //skipping samples before next FFT (but fseek doesn't work for pipes)
+            for(int seek_remain=every_n_samples-fft_size;seek_remain>0;seek_remain-=the_bufsize)
+            {
+                fread(temp_f, sizeof(complexf), MIN_M(the_bufsize,seek_remain), infile);
+            }
+        }
+        else
+        {
+            //overlapped FFT
+            for(int i=0;i<fft_size-every_n_samples;i++) input[i]=input[i+every_n_samples];
+            fread(input+fft_size-every_n_samples, sizeof(complexf), every_n_samples, infile);
+        }
+        //apply_window_c(input,windowed,fft_size,window);
+        apply_precalculated_window_c(input,windowed,fft_size,windowt);
+        fft_execute(plan);
+        //at this stage we have ready fft in output
+        //now logaveragepower_cf -70 8192 3
+        if (n = 0 ) {
+            memset(output2,0,sizeof(float)*fft_size);
+        }
+        if (n < avgnumber) {
+             accumulate_power_cf((complexf*)output, output2, fft_size);
+             n++;
+        } else {
+        	n = 0; //reset averaging
+            log_ff(output2, output2, fft_size, add_db);
+            //now fft_exchange_sides_ff from output2 to output
+            memcpy(output,output2+fft_size/2,fft_size/2*sizeof(float));
+            memcpy(output+fft_size/2,output2,fft_size/2*sizeof(float));
+            //now compress_fft_adpcm_f_u8 8192 from output to output2 and then to file
+            memcpy(fft_compress_ima_adpcm_get_write_pointer(&job),output,fft_size*sizeof(float));
+            fft_compress_ima_adpcm(&job, output_u8);
+            fwrite(output, sizeof(unsigned char), job.real_data_size/2, outfile);
+        }
+    }
+    fft_compress_ima_adpcm_free(&job);
+
+}
 
 
 int decimating_shift_addfast_cc(FILE *infile, FILE *outfile, int argc, char *argv[])
@@ -527,29 +628,6 @@ int decimating_shift_addfast_cc(FILE *infile, FILE *outfile, int argc, char *arg
     int factor;
     window_t window = WINDOW_DEFAULT;
     float transition_bw = 0.05;
-
-    /*
-     * from fir_decimate_cc
-     *        if(argc<=2) return badsyntax("need required parameter (decimation factor)");
-
-        int factor;
-        sscanf(argv[2],"%d",&factor);
-
-        float transition_bw = 0.05;
-        if(argc>=4) sscanf(argv[3],"%g",&transition_bw);
-
-        window_t window = WINDOW_DEFAULT;
-        if(argc>=5)
-        {
-            window=firdes_get_window_from_string(argv[4]);
-        }
-        else fprintf(stderr,"fir_decimate_cc: window = %s\n",firdes_get_string_from_window(window));
-
-        fir_decimate_t decimator = fir_decimate_init(factor, transition_bw, window);
-
-        while (env_csdr_fixed_big_bufsize < decimator.taps_length*2) env_csdr_fixed_big_bufsize*=2; //temporary fix for buffer size if [transition_bw] is low
-     *
-     */
 
     int fd;
     if(fd=init_fifo(argc,argv))
@@ -581,26 +659,6 @@ int decimating_shift_addfast_cc(FILE *infile, FILE *outfile, int argc, char *arg
     //transient buffer probably needs place for the decimator to breathe
     complexf *decimator_buffer =  (complexf *)        malloc((the_bufsize+(factor*2))*sizeof(complexf)); //need the 2× because we might also put complex floats into it
     sendbufsize(the_bufsize/factor,outfile); //decimation happens here
-
-    /*
-     * from fir_decimate_cc
-     *
-     *         // init function can't have the buffer since it is initialized after, so we set this manually
-        // would be better to encapsulate the buffer in fir_decimate_t
-        decimator.write_pointer = (complexf*) input_buffer;
-        decimator.input_skip = the_bufsize;
-
-        int output_size = 0;
-        for(;;)
-        {
-            FEOF_CHECK;
-            fread(decimator.write_pointer, sizeof(complexf), decimator.input_skip, infile);
-            output_size = fir_decimate_cc((complexf*)input_buffer, (complexf*)output_buffer, the_bufsize, &decimator);
-            fwrite(output_buffer, sizeof(complexf), output_size, outfile);
-            TRY_YIELD;
-        }
-     *
-     */
 
 
     for(;;)
