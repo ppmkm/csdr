@@ -578,8 +578,7 @@ int decimating_shift_addfast_cc(FILE *infile, FILE *outfile, int argc, char *arg
     while (env_csdr_fixed_big_bufsize < decimator.taps_length*2) env_csdr_fixed_big_bufsize*=2; //temporary fix for buffer size if [transition_bw] is low
 
     if(!initialize_buffers(infile,outfile)) return -2;
-    //transient buffer needs place for the decimator to breathe
-    complexf *addfast_output_buffer =  (complexf *)        malloc((the_bufsize+(factor*2))*sizeof(complexf)); //need the 2× because we might also put complex floats into it
+    //transient buffer probably needs place for the decimator to breathe
     complexf *decimator_buffer =  (complexf *)        malloc((the_bufsize+(factor*2))*sizeof(complexf)); //need the 2× because we might also put complex floats into it
     sendbufsize(the_bufsize/factor,outfile); //decimation happens here
 
@@ -620,8 +619,8 @@ int decimating_shift_addfast_cc(FILE *infile, FILE *outfile, int argc, char *arg
 //            if(!FREAD_C) break;
         	if(!fread (input_buffer, sizeof(complexf), decimator.input_skip, infile)) break;
         	remain=decimator.input_skip;
-            ibufptr=input_buffer;
-            obufptr=addfast_output_buffer;
+            ibufptr=(complexf *)input_buffer;
+            obufptr=decimator.write_pointer;
             while(remain)
             {
                 current_size=(remain>1024)?1024:remain;
@@ -630,8 +629,6 @@ int decimating_shift_addfast_cc(FILE *infile, FILE *outfile, int argc, char *arg
                 obufptr+=current_size;
                 remain-=current_size;
             }
-            //now we have addfast output in addfast_output_buffer
-            memcpy (decimator.write_pointer,addfast_output_buffer,decimator.input_skip*sizeof(complexf));
             int output_size = fir_decimate_cc((complexf*)decimator_buffer, (complexf*)output_buffer, the_bufsize, &decimator);
             fwrite(output_buffer, sizeof(complexf), output_size, outfile);
             if(read_fifo_ctl(fd,"%g\n",&rate)) break;
