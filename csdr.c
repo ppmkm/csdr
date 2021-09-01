@@ -276,17 +276,17 @@ int clone_(int bufsize_param, FILE *infile, FILE *outfile)
 
 int init_fifo(int argc, char *argv[])
 {
-    if(argc>=4)
-    {
-        if(!strcmp(argv[2],"--fifo"))
+	int i = 0;
+	for (i = 1 ; i < argc ; i++){
+        if(!strcmp(argv[i],"--fifo") && argc >= i)
         {
-            errhead(); fprintf(stderr,"fifo control mode on\n");
-            int fd = open(argv[3], O_RDONLY);
+            errhead(); fprintf(stderr,"fifo control mode on, fifo: %s\n", argv[i+1]);
+            int fd = open(argv[i+1 ], O_RDONLY);
             int flags = fcntl(fd, F_GETFL, 0);
             fcntl(fd, F_SETFL, flags | O_NONBLOCK);
             return fd;
         }
-        else if(!strcmp(argv[2],"--fd"))  
+        else if(!strcmp(argv[i],"--fd") && argc >= i)
         {
             //to use this:
             //1. Create a pipe(pipedesc) in your process.
@@ -296,7 +296,7 @@ int init_fifo(int argc, char *argv[])
             //3. From your parent process, write into pipedesc[1].
             //This is implemented in ddcd, check there to see how to do it!
             int fd;
-            if(sscanf(argv[3], "%d",&fd)<=0) return 0;
+            if(sscanf(argv[i+1], "%d",&fd)<=0) return 0;
             errhead();
             fprintf(stderr,"fd control mode on, fd=%d\n", fd);
             int flags = fcntl(fd, F_GETFL, 0);
@@ -417,6 +417,7 @@ int getbufsize(FILE *infile)
 
 
 float* input_buffer;
+float* transient_buffer;
 unsigned char* buffer_u8;
 float *output_buffer;
 short *buffer_i16;
@@ -491,6 +492,152 @@ int parse_env()
     {
         env_csdr_print_bufsizes = atoi(envtmp);
     }
+}
+
+/* TODO simplify with some monolithic operations
+ * openweb+  1326   254  0 09:44 ?        00:00:00 /bin/sh -c csdr shift_addfast_cc --fifo /tmp/openwebrx_pipe_shift_pipe_140715154035600 -ih127.0.0.1 -ip59373 |
+ *                                                            csdr fir_decimate_cc 170 0.05 HAMMING |
+ *                                                            csdr bandpass_fir_fft_cc --fifo /tmp/openwebrx_pipe_bpf_pipe_140715153749160 0.0265625 HAMMING |
+ *                                                            csdr squelch_and_smeter_cc --fifo /tmp/openwebrx_pipe_squelch_pipe_140715149865256 --outfifo /tmp/openwebrx_pipe_smeter_pipe_140715149865200 5 2
+ *                                                            | csdr realpart_cf
+ *                                                            | csdr agc_ff
+ *                                                            | csdr convert_f_s16
+ *                                                            | csdr encode_ima_adpcm_i16_u8
+ * openweb+  1346   254  0 09:44 ?        00:00:00 /bin/sh -c csdr fft_cc 8192 227555.55555555553 --benchmark  -ih127.0.0.1 -ip59373
+ *                                                          | csdr logaveragepower_cf -70 8192 3
+ *                                                          | csdr fft_exchange_sides_ff 8192
+ *                                                          | csdr compress_fft_adpcm_f_u8 8192
+ *
+ * phase 1: monolithing paraterless ops:
+ * 0. decimating_addfast_cc : shift_addfast_cc+fir_decimate_cc
+ * 1. audio part: realagcadpcm_cu8:  realpart_cf+agc_ff+convert_f_s16+encode_ima_adpcm_i16_u8
+ * 2. fft part: fft_adpcm_cu8: fft_cc +logaveragepower+fft_exchange_sides+compress_adpcm_f_u8
+ */
+
+
+int decimating_shift_addfast_cc(FILE *infile, FILE *outfile, int argc, char *argv[])
+{
+	/* at this stage we have already opened input FILE *infile, FILE *outfile
+	 *
+	 */
+    bigbufs=1;
+
+    float starting_phase=0;
+    float rate;
+    int factor;
+    window_t window = WINDOW_DEFAULT;
+    float transition_bw = 0.05;
+
+    /*
+     * from fir_decimate_cc
+     *        if(argc<=2) return badsyntax("need required parameter (decimation factor)");
+
+        int factor;
+        sscanf(argv[2],"%d",&factor);
+
+        float transition_bw = 0.05;
+        if(argc>=4) sscanf(argv[3],"%g",&transition_bw);
+
+        window_t window = WINDOW_DEFAULT;
+        if(argc>=5)
+        {
+            window=firdes_get_window_from_string(argv[4]);
+        }
+        else fprintf(stderr,"fir_decimate_cc: window = %s\n",firdes_get_string_from_window(window));
+
+        fir_decimate_t decimator = fir_decimate_init(factor, transition_bw, window);
+
+        while (env_csdr_fixed_big_bufsize < decimator.taps_length*2) env_csdr_fixed_big_bufsize*=2; //temporary fix for buffer size if [transition_bw] is low
+     *
+     */
+
+    int fd;
+    if(fd=init_fifo(argc,argv))
+    {
+        fprintf(stderr,"decimating shift_addfast fifo opened\n");
+        while(!read_fifo_ctl(fd,"%g\n",&rate)) usleep(10000);
+        fprintf(stderr,"shift_addfast fifo read something \n");
+        if(argc<7) return badsyntax("need required parameter (--fifo fifo, decimation, transition_bw, window)");
+        sscanf(argv[4],"%d",&factor);
+        sscanf(argv[5],"%g",&transition_bw);
+        window=firdes_get_window_from_string(argv[6]);
+    }
+    else
+    {
+        if(argc<6) return badsyntax("need required parameter (rate, decimation, transition_bw, window)");
+        sscanf(argv[2],"%d",&factor);
+        sscanf(argv[3],"%g",&transition_bw);
+        window=firdes_get_window_from_string(argv[4]);
+    }
+
+    fprintf(stderr,"decimating shift_addfast starting..., rate: %g, factor: %d, transition_bw: %g \n", rate, factor, transition_bw );
+
+
+    fir_decimate_t decimator = fir_decimate_init(factor, transition_bw, window);
+
+    while (env_csdr_fixed_big_bufsize < decimator.taps_length*2) env_csdr_fixed_big_bufsize*=2; //temporary fix for buffer size if [transition_bw] is low
+
+    if(!initialize_buffers(infile,outfile)) return -2;
+    //transient buffer probably needs place for the decimator to breathe
+    complexf *decimator_buffer =  (complexf *)        malloc((the_bufsize+(factor*2))*sizeof(complexf)); //need the 2× because we might also put complex floats into it
+    sendbufsize(the_bufsize/factor,outfile); //decimation happens here
+
+    /*
+     * from fir_decimate_cc
+     *
+     *         // init function can't have the buffer since it is initialized after, so we set this manually
+        // would be better to encapsulate the buffer in fir_decimate_t
+        decimator.write_pointer = (complexf*) input_buffer;
+        decimator.input_skip = the_bufsize;
+
+        int output_size = 0;
+        for(;;)
+        {
+            FEOF_CHECK;
+            fread(decimator.write_pointer, sizeof(complexf), decimator.input_skip, infile);
+            output_size = fir_decimate_cc((complexf*)input_buffer, (complexf*)output_buffer, the_bufsize, &decimator);
+            fwrite(output_buffer, sizeof(complexf), output_size, outfile);
+            TRY_YIELD;
+        }
+     *
+     */
+
+
+    for(;;)
+    {
+        shift_addfast_data_t data=shift_addfast_init(rate);
+        errhead();
+        fprintf(stderr,"reinitialized to %g\n",rate);
+        int remain, current_size;
+        complexf* ibufptr;
+        complexf* obufptr;
+        //TODO decimate buffer
+        decimator.write_pointer = (complexf*) decimator_buffer;
+        decimator.input_skip = the_bufsize;
+        for(;;)
+        {
+//            if(!FREAD_C) break;
+        	if(!fread (input_buffer, sizeof(complexf), decimator.input_skip, infile)) break;
+        	remain=decimator.input_skip;
+            ibufptr=(complexf *)input_buffer;
+            obufptr=decimator.write_pointer;
+            while(remain)
+            {
+                current_size=(remain>1024)?1024:remain;
+                starting_phase=shift_addfast_cc((complexf*)ibufptr, obufptr, current_size, &data, starting_phase);
+                ibufptr+=current_size;
+                obufptr+=current_size;
+                remain-=current_size;
+            }
+            int output_size = fir_decimate_cc((complexf*)decimator_buffer, (complexf*)output_buffer, the_bufsize, &decimator);
+            fwrite(output_buffer, sizeof(complexf), output_size, outfile);
+            if(read_fifo_ctl(fd,"%g\n",&rate)) break;
+            TRY_YIELD;
+        }
+    }
+    return 0;
+
+
 }
 
 int main(int argc, char *argv[])
@@ -926,6 +1073,13 @@ int main(int argc, char *argv[])
         }
         return 0;
     }
+
+    if(!strcmp(argv[1],"decimating_shift_addfast_cc"))
+    {
+    	decimating_shift_addfast_cc(infile, outfile, argc,argv);
+    	return 0;
+    }
+
 
 #ifdef LIBCSDR_GPL
     if(!strcmp(argv[1],"decimating_shift_addition_cc"))
