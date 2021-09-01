@@ -608,7 +608,7 @@ int fft_adpcm_cu8(FILE *infile, FILE *outfile, int argc, char *argv[])
             //now compress_fft_adpcm_f_u8 8192 from output to output2 and then to file
             memcpy(fft_compress_ima_adpcm_get_write_pointer(&job),output,fft_size*sizeof(float));
             fft_compress_ima_adpcm(&job, output_u8);
-            fwrite(output, sizeof(unsigned char), job.real_data_size/2, outfile);
+            fwrite(output_u8, sizeof(unsigned char), job.real_data_size/2, outfile);
         }
     }
     fft_compress_ima_adpcm_free(&job);
