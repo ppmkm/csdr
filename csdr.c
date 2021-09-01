@@ -1138,6 +1138,12 @@ int main(int argc, char *argv[])
     	return 0;
     }
 
+    if (!strcmp(argv[1], "fft_adpcm_cu8"))
+    {
+    	fft_adpcm_cu8(infile, outfile, argc,argv);
+    	return 0;
+    }
+
 
 #ifdef LIBCSDR_GPL
     if(!strcmp(argv[1],"decimating_shift_addition_cc"))
