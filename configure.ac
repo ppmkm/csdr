@@ -78,7 +78,7 @@ if test yes = $enable_neon; then
             ;;
     esac
 fi
-OPTIMIZED_FLAGS="-g -O3 -ffast-math"
+OPTIMIZED_FLAGS="-g -Ofast -march=native -ffast-math"
 case `uname -m` in
     arm*)
         PARAMS_ARCH="-march=armv7-a -mtune=cortex-a8 -funsafe-math-optimizations -Wformat=0"

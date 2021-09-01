@@ -28,3 +28,4 @@ ltmain.sh
 missing
 libtool
 csdr.pc
+/build/

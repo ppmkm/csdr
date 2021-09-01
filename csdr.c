@@ -61,6 +61,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <assert.h>
 #include "benchmark.h"
 #include <getopt.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
 
 char usage[]=
 "csdr - a simple commandline tool for Software Defined Radio receiver DSP.\n\n"
@@ -215,8 +217,9 @@ int bigbufs = 0;
 //change on on 2015-08-29: we don't yield at all. fread() will do it if it blocks
 #define YIELD_EVERY_N_TIMES 3
 //#define TRY_YIELD if(++yield_counter%YIELD_EVERY_N_TIMES==0) sched_yield()
-#define TRY_YIELD fflush(stdout);sched_yield()
+//#define TRY_YIELD fflush(outfile);sched_yield()
 //unsigned yield_counter=0;
+#define TRY_YIELD
 
 char **argv_global;
 int argc_global;
@@ -247,29 +250,29 @@ int clipdetect_ff(float* input, int input_size)
     return 0;
 }
 
-int clone_(int bufsize_param)
+int clone_(int bufsize_param, FILE *infile, FILE *outfile)
 {
         unsigned char* clone_buffer;
         clone_buffer = (unsigned char*)malloc(bufsize_param*sizeof(unsigned char));
         for(;;)
         {
-            fread(clone_buffer, sizeof(unsigned char), bufsize_param, stdin);
-            fwrite(clone_buffer, sizeof(unsigned char), bufsize_param, stdout);
+            fread(clone_buffer, sizeof(unsigned char), bufsize_param, infile);
+            fwrite(clone_buffer, sizeof(unsigned char), bufsize_param, outfile);
             TRY_YIELD;
         }
 }
 
-#define FREAD_U8    fread (input_buffer,    sizeof(unsigned char), the_bufsize, stdin)
-#define FWRITE_U8   fwrite (output_buffer,  sizeof(unsigned char), the_bufsize, stdout)
-#define FREAD_S16   fread (input_buffer,    sizeof(short),      the_bufsize, stdin)
-#define FWRITE_S16  fwrite (output_buffer,  sizeof(short),      the_bufsize, stdout)
-#define FREAD_R     fread (input_buffer,    sizeof(float),      the_bufsize, stdin)
-#define FREAD_C     fread (input_buffer,    sizeof(float)*2,    the_bufsize, stdin)
-#define FWRITE_R    fwrite (output_buffer,  sizeof(float),      the_bufsize, stdout)
-#define FWRITE_C    fwrite (output_buffer,  sizeof(float)*2,    the_bufsize, stdout)
-#define FEOF_CHECK  if(feof(stdin)) return 0
-//#define BIG_FREAD_C fread(input_buffer, sizeof(float)*2, BIG_BUFSIZE, stdin)
-//#define BIG_FWRITE_C fwrite(output_buffer, sizeof(float)*2, BIG_BUFSIZE, stdout)
+#define FREAD_U8    fread (input_buffer,    sizeof(unsigned char), the_bufsize, infile)
+#define FWRITE_U8   fwrite (output_buffer,  sizeof(unsigned char), the_bufsize, outfile)
+#define FREAD_S16   fread (input_buffer,    sizeof(short),      the_bufsize, infile)
+#define FWRITE_S16  fwrite (output_buffer,  sizeof(short),      the_bufsize, outfile)
+#define FREAD_R     fread (input_buffer,    sizeof(float),      the_bufsize, infile)
+#define FREAD_C     fread (input_buffer,    sizeof(float)*2,    the_bufsize, infile)
+#define FWRITE_R    fwrite (output_buffer,  sizeof(float),      the_bufsize, outfile)
+#define FWRITE_C    fwrite (output_buffer,  sizeof(float)*2,    the_bufsize, outfile)
+#define FEOF_CHECK  if(feof(infile)) return 0
+//#define BIG_FREAD_C fread(input_buffer, sizeof(float)*2, BIG_BUFSIZE, infile)
+//#define BIG_FWRITE_C fwrite(output_buffer, sizeof(float)*2, BIG_BUFSIZE, outfile)
 
 int init_fifo(int argc, char *argv[])
 {
@@ -302,6 +305,58 @@ int init_fifo(int argc, char *argv[])
         }
     }
     return 0;
+}
+
+FILE * init_tcpin(int argc, char *argv[])
+{
+	char *ihost = NULL;
+	int iport = 0;
+	int i = 0;
+	for (i = 1 ; i < argc ; i++){
+		if(!strncmp(argv[i],"-ih",3) && (strlen(argv[i])>3)) { //e.g -ihlocalhost
+			fprintf(stderr, "input host\n");
+			ihost = argv[i]+3;
+			fprintf(stderr, "input host: %s\n", ihost);
+		}
+		if((!strncmp(argv[i],"-ip",3)) && (strlen(argv[i])>3)) { //e.g -ihlocalhost
+			iport = atoi(argv[i]+3);
+			fprintf(stderr, "input port: %d\n", iport);
+		}
+	}
+	if ((iport != 0) && (ihost != NULL)) {
+		fprintf(stderr, "connecting input socket...\n", iport);
+		int socket_desc;
+		struct sockaddr_in server;
+			socket_desc = socket(AF_INET , SOCK_STREAM , 0);
+
+			if (socket_desc == -1)
+			{
+				perror("Could not create socket");
+				return NULL;
+			}
+		int rcvlowat = 65536;
+		int size = sizeof(rcvlowat);
+		setsockopt(socket_desc,SOL_SOCKET,SO_RCVLOWAT,(void*)&rcvlowat, sizeof(rcvlowat));
+		int watval = 0;
+		getsockopt(socket_desc,SOL_SOCKET,SO_RCVLOWAT,(void*)&watval, &size);
+		fprintf(stderr, "rcvlowat: %d\n",watval);
+		server.sin_addr.s_addr = inet_addr(ihost);
+		server.sin_family = AF_INET;
+		server.sin_port = htons(iport);
+			//Connect to remote server
+		int sfd = connect(socket_desc , (struct sockaddr *)&server , sizeof(server));
+				if ( sfd < 0)
+				{
+//					fprintf(stderr,"connect error");
+					perror("connect error");
+					return NULL;
+				}
+				fprintf(stderr,"Connected");
+		return fdopen(socket_desc,"r");
+
+	}
+	return 0 ; //nothing
+
 }
 
 
@@ -349,11 +404,11 @@ int read_fifo_ctl(int fd, char* format, ...)
 #define STRINGIFY_VALUE(x) STRINGIFY_NAME(x)
 #define STRINGIFY_NAME(x) #x
 
-int getbufsize()
+int getbufsize(FILE *infile)
 {
     if(!env_csdr_dynamic_bufsize_on) return (bigbufs) ? env_csdr_fixed_big_bufsize : env_csdr_fixed_bufsize;
     int recv_first[2];
-    fread(recv_first, sizeof(int), 2, stdin);
+    fread(recv_first, sizeof(int), 2, infile);
     if(memcmp(recv_first, SETBUF_PREAMBLE, sizeof(char)*4)!=0)
     { badsyntax("warning! Did not match preamble on the beginning of the stream. You should put \"csdr setbuf <buffer size>\" at the beginning of the chain! Falling back to default buffer size: " STRINGIFY_VALUE(SETBUF_DEFAULT_BUFSIZE)); return SETBUF_DEFAULT_BUFSIZE; }
     if(recv_first[1]<=0) { badsyntax("warning! Invalid buffer size." ); return 0; }
@@ -378,9 +433,9 @@ int unitround(int what)
     return ((what-1)&~(UNITROUND_UNIT-1))+UNITROUND_UNIT;
 }
 
-int initialize_buffers()
+int initialize_buffers(FILE *infile, FILE *outfile)
 {
-    if(!(the_bufsize=getbufsize())) return 0;
+    if(!(the_bufsize=getbufsize(infile))) return 0;
     the_bufsize=unitround(the_bufsize);
     if(env_csdr_print_bufsizes) { errhead(); fprintf(stderr,"buffer size set to %d\n", the_bufsize); }
     input_buffer =  (float*)        malloc(the_bufsize*sizeof(float) * 2); //need the 2× because we might also put complex floats into it
@@ -396,7 +451,7 @@ int initialize_buffers()
     return the_bufsize;
 }
 
-int sendbufsize(int size)
+int sendbufsize(int size, FILE *outfile)
 {
     if(size<=4096)
     {
@@ -409,7 +464,7 @@ int sendbufsize(int size)
     int send_first[2];
     memcpy((char*)send_first, SETBUF_PREAMBLE, 4*sizeof(char));
     send_first[1] = size;
-    fwrite(send_first, sizeof(int), 2, stdout);
+    fwrite(send_first, sizeof(int), 2, outfile);
     return size;
 }
 
@@ -448,27 +503,31 @@ int main(int argc, char *argv[])
 
     fcntl(STDIN_FILENO, F_SETPIPE_SZ, 65536*32);
     fcntl(STDOUT_FILENO, F_SETPIPE_SZ, 65536*32);
-    //fprintf(stderr, "csdr: F_SETPIPE_SZ\n");
+    //fprintf(stderr, "csdr: F_SETPIPE_SZ\n");L
+    FILE *infile = stdin;
+    FILE *outfile = stdout;
+    FILE *insock = init_tcpin(argc, argv);
+    if (insock != NULL) infile = insock;
 
     if(!strcmp(argv[1],"setbuf"))
     {
         if(argc<=2) return badsyntax("need required parameter (buffer size)");
         sscanf(argv[2],"%d",&the_bufsize);
         if(the_bufsize<=0) return badsyntax("buffer size <= 0 is invalid");
-        sendbufsize(the_bufsize);
-        clone_(the_bufsize); //After sending the buffer size out, just copy stdin to stdout
+        sendbufsize(the_bufsize,outfile);
+        clone_(the_bufsize, infile, outfile); //After sending the buffer size out, just copy infile to outfile
     }
 
     if(!strcmp(argv[1],"clone") || !strcmp(argv[1],"REM"))
     {
-        if(!sendbufsize(initialize_buffers())) return -2;
-        clone_(the_bufsize);
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
+        clone_(the_bufsize, infile, outfile);
     }
 #define SET_NONBLOCK(fd) fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK)
 
     if(!strcmp(argv[1],"fifo"))
     {
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
 
         int fifo_buffer_size;
         if(argc<=2) return badsyntax("need required parameter (buffer_size)");
@@ -480,8 +539,8 @@ int main(int argc, char *argv[])
         char** fifo_buffers = (char**)malloc(sizeof(char*)*fifo_num_buffers);
         for(int i=0;i<fifo_num_buffers;i++) fifo_buffers[i]=(char*)malloc(sizeof(char)*fifo_buffer_size);
 
-        SET_NONBLOCK(STDIN_FILENO);
-        SET_NONBLOCK(STDOUT_FILENO);
+//        SET_NONBLOCK(STDIN_FILENO);
+//        SET_NONBLOCK(STDOUT_FILENO);
 
         fd_set read_fds;
         FD_ZERO(&read_fds);
@@ -555,11 +614,11 @@ int main(int argc, char *argv[])
 
     if(!strcmp(argv[1],"convert_u8_f"))
     {
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;)
         {
             FEOF_CHECK;
-            fread(buffer_u8, sizeof(unsigned char), the_bufsize, stdin);
+            fread(buffer_u8, sizeof(unsigned char), the_bufsize, infile);
             convert_u8_f(buffer_u8, output_buffer, the_bufsize);
             FWRITE_R;
             TRY_YIELD;
@@ -567,23 +626,23 @@ int main(int argc, char *argv[])
     }
     if(!strcmp(argv[1],"convert_f_u8")) //not tested
     {
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;)
         {
             FEOF_CHECK;
             FREAD_R;
             convert_f_u8(input_buffer, buffer_u8, the_bufsize);
-            fwrite(buffer_u8, sizeof(unsigned char), the_bufsize, stdout);
+            fwrite(buffer_u8, sizeof(unsigned char), the_bufsize, outfile);
             TRY_YIELD;
         }
     }
     if(!strcmp(argv[1],"convert_s8_f"))
     {
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;)
         {
             FEOF_CHECK;
-            fread((signed char*)buffer_u8, sizeof(signed char), the_bufsize, stdin);
+            fread((signed char*)buffer_u8, sizeof(signed char), the_bufsize, infile);
             convert_s8_f((signed char*)buffer_u8, output_buffer, the_bufsize);
             FWRITE_R;
             TRY_YIELD;
@@ -591,35 +650,35 @@ int main(int argc, char *argv[])
     }
     if(!strcmp(argv[1],"convert_f_s8")) //not tested
     {
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;)
         {
             FEOF_CHECK;
             FREAD_R;
             convert_f_s8(input_buffer, (signed char*)buffer_u8, the_bufsize);
-            fwrite((signed char*)buffer_u8, sizeof(signed char), the_bufsize, stdout);
+            fwrite((signed char*)buffer_u8, sizeof(signed char), the_bufsize, outfile);
             TRY_YIELD;
         }
     }
     if((!strcmp(argv[1],"convert_f_i16")) || (!strcmp(argv[1],"convert_f_s16")))
     {
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;)
         {
             FEOF_CHECK;
             FREAD_R;
             convert_f_i16(input_buffer, buffer_i16, the_bufsize);
-            fwrite(buffer_i16, sizeof(short), the_bufsize, stdout);
+            fwrite(buffer_i16, sizeof(short), the_bufsize, outfile);
             TRY_YIELD;
         }
     }
     if((!strcmp(argv[1],"convert_i16_f")) || (!strcmp(argv[1],"convert_s16_f")))
     {
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;)
         {
             FEOF_CHECK;
-            fread(buffer_i16, sizeof(short), the_bufsize, stdin);
+            fread(buffer_i16, sizeof(short), the_bufsize, infile);
             convert_i16_f(buffer_i16, output_buffer, the_bufsize);
             FWRITE_R;
             TRY_YIELD;
@@ -629,13 +688,13 @@ int main(int argc, char *argv[])
     {
         int bigendian = (argc>2) && (!strcmp(argv[2],"--bigendian"));
         unsigned char* s24buffer = (unsigned char*)malloc(sizeof(unsigned char)*the_bufsize*3);
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;)
         {
             FEOF_CHECK;
             FREAD_R;
             convert_f_s24(input_buffer, s24buffer, the_bufsize, bigendian);
-            fwrite(s24buffer, sizeof(unsigned char)*3, the_bufsize, stdout);
+            fwrite(s24buffer, sizeof(unsigned char)*3, the_bufsize, outfile);
             TRY_YIELD;
         }
     }
@@ -643,11 +702,11 @@ int main(int argc, char *argv[])
     {
         int bigendian = (argc>2) && (!strcmp(argv[2],"--bigendian"));
         unsigned char* s24buffer = (unsigned char*)malloc(sizeof(unsigned char)*the_bufsize*3);
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;)
         {
             FEOF_CHECK;
-            fread(s24buffer, sizeof(unsigned char)*3, the_bufsize, stdin);
+            fread(s24buffer, sizeof(unsigned char)*3, the_bufsize, infile);
             convert_s24_f(s24buffer, output_buffer, the_bufsize, bigendian);
             FWRITE_R;
             TRY_YIELD;
@@ -655,7 +714,7 @@ int main(int argc, char *argv[])
     }
     if(!strcmp(argv[1],"realpart_cf"))
     {
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;)
         {
             FEOF_CHECK;
@@ -667,13 +726,13 @@ int main(int argc, char *argv[])
     }
     if(!strcmp(argv[1],"clipdetect_ff"))
     {
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;)
         {
             FEOF_CHECK;
             FREAD_R;
             clipdetect_ff(input_buffer, the_bufsize);
-            fwrite(input_buffer, sizeof(float), the_bufsize, stdout);
+            fwrite(input_buffer, sizeof(float), the_bufsize, outfile);
             TRY_YIELD;
         }
     }
@@ -682,7 +741,7 @@ int main(int argc, char *argv[])
         if(argc<=2) return badsyntax("need required parameter (gain)");
         float gain;
         sscanf(argv[2],"%g",&gain);
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;)
         {
             FEOF_CHECK;
@@ -696,7 +755,7 @@ int main(int argc, char *argv[])
     {
         float max_amplitude=1.0;
         if(argc>=3) sscanf(argv[2],"%g",&max_amplitude);
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;)
         {
             FEOF_CHECK;
@@ -713,11 +772,11 @@ int main(int argc, char *argv[])
         sscanf(argv[2],"%g",&to_repeat);
         int buf_times = 0;
         if(argc>=4) sscanf(argv[3],"%d",&buf_times);
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(int i=0;i<the_bufsize;i++) output_buffer[i]=to_repeat;
         for(int i=0;(!buf_times)||i<buf_times;i++)
         {
-            fwrite(output_buffer, sizeof(float), the_bufsize, stdout);
+            fwrite(output_buffer, sizeof(float), the_bufsize, outfile);
             TRY_YIELD;
         }
         return 0;
@@ -728,10 +787,9 @@ int main(int argc, char *argv[])
         float starting_phase=0;
         float rate;
         sscanf(argv[2],"%g",&rate);
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;)
         {
-            FEOF_CHECK;
             if(!FREAD_C) break;
             starting_phase=shift_math_cc((complexf*)input_buffer, (complexf*)output_buffer, the_bufsize, rate, starting_phase);
             FWRITE_C;
@@ -753,13 +811,12 @@ int main(int argc, char *argv[])
         int table_size=65536;
         sscanf(argv[2],"%g",&rate);
         if(argc>3) sscanf(argv[3],"%d",&table_size);
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         shift_table_data_t table_data=shift_table_init(table_size);
         errhead();
         fprintf(stderr,"LUT initialized\n");
         for(;;)
         {
-            FEOF_CHECK;
             if(!FREAD_C) break;
             starting_phase=shift_table_cc((complexf*)input_buffer, (complexf*)output_buffer, the_bufsize, rate, table_data, starting_phase);
             FWRITE_C;
@@ -778,7 +835,9 @@ int main(int argc, char *argv[])
         int fd;
         if(fd=init_fifo(argc,argv))
         {
+            fprintf(stderr,"shift_addfast fifo opened\n");
             while(!read_fifo_ctl(fd,"%g\n",&rate)) usleep(10000);
+            fprintf(stderr,"shift_addfast fifo read something \n");
         }
         else
         {
@@ -786,7 +845,7 @@ int main(int argc, char *argv[])
             sscanf(argv[2],"%g",&rate);
         }
 
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;)
         {
             shift_addfast_data_t data=shift_addfast_init(rate);
@@ -797,7 +856,6 @@ int main(int argc, char *argv[])
             float* obufptr;
             for(;;)
             {
-                FEOF_CHECK;
                 if(!FREAD_C) break;
                 remain=the_bufsize;
                 ibufptr=input_buffer;
@@ -837,7 +895,7 @@ int main(int argc, char *argv[])
             sscanf(argv[2],"%g",&rate);
         }
 
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;)
         {
             shift_unroll_data_t data=shift_unroll_init(rate, 1024);
@@ -879,8 +937,8 @@ int main(int argc, char *argv[])
         int decimation=1;
         sscanf(argv[2],"%g",&rate);
         if(argc>3) sscanf(argv[3],"%d",&decimation);
-        if(!initialize_buffers()) return -2;
-        sendbufsize(the_bufsize/decimation);
+        if(!initialize_buffers(infile,outfile)) return -2;
+        sendbufsize(the_bufsize/decimation,outfile);
         shift_addition_data_t d=decimating_shift_addition_init(rate, decimation);
         decimating_shift_addition_status_t s;
         s.decimation_remain=0;
@@ -890,7 +948,7 @@ int main(int argc, char *argv[])
             FEOF_CHECK;
             if(!FREAD_C) break;
             s=decimating_shift_addition_cc((complexf*)input_buffer, (complexf*)output_buffer, the_bufsize, d, decimation, s);
-            fwrite(output_buffer, sizeof(float)*2, s.output_size, stdout);
+            fwrite(output_buffer, sizeof(float)*2, s.output_size, outfile);
             TRY_YIELD;
         }
         return 0;
@@ -914,7 +972,7 @@ int main(int argc, char *argv[])
             sscanf(argv[2],"%g",&rate);
         }
 
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;)
         {
             shift_addition_data_t data=shift_addition_init(rate);
@@ -925,7 +983,7 @@ int main(int argc, char *argv[])
             float* obufptr;
             for(;;)
             {
-                FEOF_CHECK;
+//                FEOF_CHECK;
                 if(!FREAD_C) break;
                 remain=the_bufsize;
                 ibufptr=input_buffer;
@@ -951,7 +1009,7 @@ int main(int argc, char *argv[])
         if(argc<=2) return badsyntax("need required parameter (rate)");
         float rate;
         sscanf(argv[2],"%g",&rate);
-        //if(initialize_buffers()) return -2; //most likely we don't need this here
+        //if(initialize_buffers(infile,outfile)) return -2; //most likely we don't need this here
         shift_addition_data_t data=shift_addition_init(rate);
         shift_addition_cc_test(data);
         return 0;
@@ -960,7 +1018,7 @@ int main(int argc, char *argv[])
     if(!strcmp(argv[1],"dcblock_ff"))
     {
         static dcblock_preserve_t dcp; //will be 0 as .bss is set to 0
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;)
         {
             FEOF_CHECK;
@@ -977,27 +1035,27 @@ int main(int argc, char *argv[])
         if(argc>=3) sscanf(argv[2],"%d",&dcblock_bufsize);
         float* dcblock_buffer=(float*)malloc(sizeof(float)*dcblock_bufsize);
         static float last_dc_level=0.0;
-        getbufsize(); //it is just dummy
-        sendbufsize(dcblock_bufsize);
+        getbufsize(infile); //it is just dummy
+        sendbufsize(dcblock_bufsize,outfile);
         for(;;)
         {
             FEOF_CHECK;
-            fread(dcblock_buffer, sizeof(float), dcblock_bufsize, stdin);
+            fread(dcblock_buffer, sizeof(float), dcblock_bufsize, infile);
             last_dc_level=fastdcblock_ff(dcblock_buffer, dcblock_buffer, dcblock_bufsize, last_dc_level);
-            fwrite(dcblock_buffer, sizeof(float), dcblock_bufsize, stdout);
+            fwrite(dcblock_buffer, sizeof(float), dcblock_bufsize, outfile);
             TRY_YIELD;
         }
     }
 
     if(!strcmp(argv[1],"fmdemod_atan_cf"))
     {
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         float last_phase=0;
         for(;;)
         {
             FEOF_CHECK;
             FREAD_C;
-            if(feof(stdin)) return 0;
+            if(feof(infile)) return 0;
             last_phase=fmdemod_atan_cf((complexf*)input_buffer, output_buffer, the_bufsize, last_phase);
             FWRITE_R;
             TRY_YIELD;
@@ -1005,7 +1063,7 @@ int main(int argc, char *argv[])
     }
     if(!strcmp(argv[1],"fmdemod_quadri_cf"))
     {
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         complexf last_sample;
         last_sample.i=0.;
         last_sample.q=0.;
@@ -1020,7 +1078,7 @@ int main(int argc, char *argv[])
     }
     if(!strcmp(argv[1],"fmdemod_quadri_novect_cf"))
     {
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         complexf last_sample;
         last_sample.i=0.;
         last_sample.q=0.;
@@ -1036,7 +1094,7 @@ int main(int argc, char *argv[])
     if(!strcmp(argv[1],"deemphasis_wfm_ff"))
     {
         if(argc<=3) return badsyntax("need required parameters (sample rate, tau)");
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         int sample_rate;
         sscanf(argv[2],"%d",&sample_rate);
         float tau;
@@ -1055,7 +1113,7 @@ int main(int argc, char *argv[])
 
     if(!strcmp(argv[1],"detect_nan_ff"))
     {
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;)
         {
             FEOF_CHECK;
@@ -1070,14 +1128,14 @@ int main(int argc, char *argv[])
                 }
             }
             if(nan_detect) { errhead(); fprintf(stderr, "NaN detected!\n"); }
-            fwrite(input_buffer, sizeof(float), the_bufsize, stdout);
+            fwrite(input_buffer, sizeof(float), the_bufsize, outfile);
             TRY_YIELD;
         }
     }
 
     if(!strcmp(argv[1],"floatdump_f") || !strcmp(argv[1],"dump_f"))
     {
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;)
         {
             FEOF_CHECK;
@@ -1093,23 +1151,23 @@ int main(int argc, char *argv[])
         int sample_rate;
         sscanf(argv[2],"%d",&sample_rate);
 
-        if(!sendbufsize(initialize_buffers())) return -2; //maybe we should take a /2 of bufsize over here
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2; //maybe we should take a /2 of bufsize over here
 
         int processed=0;
         for(;;)
         {
             FEOF_CHECK;
-            fread(input_buffer+the_bufsize-processed, sizeof(float), processed, stdin);
+            fread(input_buffer+the_bufsize-processed, sizeof(float), processed, infile);
             processed=deemphasis_nfm_ff(input_buffer, output_buffer, the_bufsize, sample_rate);
             if(!processed) return badsyntax("deemphasis_nfm_ff: invalid sample rate (this function works only with specific sample rates).");
             memmove(input_buffer,input_buffer+processed,(the_bufsize-processed)*sizeof(float)); //memmove lets the source and destination overlap
-            fwrite(output_buffer, sizeof(float), processed, stdout);
+            fwrite(output_buffer, sizeof(float), processed, outfile);
             TRY_YIELD;
         }
     }
     if(!strcmp(argv[1],"amdemod_cf"))
     {
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
 
         for(;;)
         {
@@ -1122,7 +1180,7 @@ int main(int argc, char *argv[])
     }
     if(!strcmp(argv[1],"amdemod_estimator_cf"))
     {
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;)
         {
             FEOF_CHECK;
@@ -1156,8 +1214,8 @@ int main(int argc, char *argv[])
 
         while (env_csdr_fixed_big_bufsize < decimator.taps_length*2) env_csdr_fixed_big_bufsize*=2; //temporary fix for buffer size if [transition_bw] is low
 
-        if(!initialize_buffers()) return -2;
-        sendbufsize(the_bufsize/factor);
+        if(!initialize_buffers(infile,outfile)) return -2;
+        sendbufsize(the_bufsize/factor,outfile);
 
         // init function can't have the buffer since it is initialized after, so we set this manually
         // would be better to encapsulate the buffer in fir_decimate_t
@@ -1168,9 +1226,9 @@ int main(int argc, char *argv[])
         for(;;)
         {
             FEOF_CHECK;
-            fread(decimator.write_pointer, sizeof(complexf), decimator.input_skip, stdin);
+            fread(decimator.write_pointer, sizeof(complexf), decimator.input_skip, infile);
             output_size = fir_decimate_cc((complexf*)input_buffer, (complexf*)output_buffer, the_bufsize, &decimator);
-            fwrite(output_buffer, sizeof(complexf), output_size, stdout);
+            fwrite(output_buffer, sizeof(complexf), output_size, outfile);
             TRY_YIELD;
         }
     }
@@ -1203,8 +1261,8 @@ int main(int argc, char *argv[])
         while (env_csdr_fixed_big_bufsize < taps_length*2) env_csdr_fixed_big_bufsize*=2; //temporary fix for buffer size if [transition_bw] is low
         //fprintf(stderr, "env_csdr_fixed_big_bufsize = %d\n", env_csdr_fixed_big_bufsize);
 
-        if(!initialize_buffers()) return -2;
-        sendbufsize(the_bufsize*factor);
+        if(!initialize_buffers(infile,outfile)) return -2;
+        sendbufsize(the_bufsize*factor,outfile);
         assert(the_bufsize > 0);
 
         float *taps;
@@ -1221,11 +1279,11 @@ int main(int argc, char *argv[])
             FEOF_CHECK;
             output_size=fir_interpolate_cc((complexf*)input_buffer, (complexf*)interp_output_buffer, the_bufsize, factor, taps, taps_length);
             //fprintf(stderr, "os %d\n",output_size);
-            fwrite(interp_output_buffer, sizeof(complexf), output_size, stdout);
+            fwrite(interp_output_buffer, sizeof(complexf), output_size, outfile);
             TRY_YIELD;
             input_skip=output_size/factor;
             memmove((complexf*)input_buffer,((complexf*)input_buffer)+input_skip,(the_bufsize-input_skip)*sizeof(complexf)); //memmove lets the source and destination overlap
-            fread(((complexf*)input_buffer)+(the_bufsize-input_skip), sizeof(complexf), input_skip, stdin);
+            fread(((complexf*)input_buffer)+(the_bufsize-input_skip), sizeof(complexf), input_skip, infile);
             //fprintf(stderr,"iskip=%d output_size=%d start=%x target=%x skipcount=%x \n",input_skip,output_size,input_buffer, ((complexf*)input_buffer)+(BIG_BUFSIZE-input_skip),(BIG_BUFSIZE-input_skip));
         }
     }
@@ -1281,7 +1339,7 @@ int main(int argc, char *argv[])
 
         //Wait forever, so that octave won't close just after popping up the window.
         //You can close it with ^C.
-        if(octave) { fflush(stdout); getchar(); }
+        if(octave) { fflush(outfile); getchar(); }
         return 0;
     }
     if(!strcmp(argv[1],"firdes_bandpass_c"))
@@ -1328,7 +1386,7 @@ int main(int argc, char *argv[])
 
         //Wait forever, so that octave won't close just after popping up the window.
         //You can close it with ^C.
-        if(octave) { fflush(stdout); getchar(); }
+        if(octave) { fflush(outfile); getchar(); }
         return 0;
     }
 
@@ -1432,7 +1490,7 @@ int main(int argc, char *argv[])
 
         fprintf(stderr, "AGC PARAMS:\n  hang_time = %d\n  reference = %f\n  attack_rate = %f\n  decay_rate = %f\n  max_gain = %f\n  initial_gain = %f\n  attack_wait_time = %d\n  gain_filter_alpha = %f\n", params->hang_time, params->reference, params->attack_rate, params->decay_rate, params->max_gain, initial_gain, params->attack_wait_time, params->gain_filter_alpha);
 
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
 
         agc_state* state = malloc(sizeof(agc_state));
         state->last_gain = initial_gain;
@@ -1473,8 +1531,8 @@ int main(int argc, char *argv[])
         input.input_size=1024;
         if(argc>=3) sscanf(argv[2],"%d",&input.input_size);
 
-        getbufsize(); //dummy
-        sendbufsize(input.input_size);
+        getbufsize(infile); //dummy
+        sendbufsize(input.input_size,outfile);
 
         input.reference=1.0;
         if(argc>=4) sscanf(argv[3],"%g",&input.reference);
@@ -1489,9 +1547,9 @@ int main(int argc, char *argv[])
         for(;;)
         {
             FEOF_CHECK;
-            fread(input.buffer_input, sizeof(float), input.input_size, stdin);
+            fread(input.buffer_input, sizeof(float), input.input_size, infile);
             fastagc_ff(&input, agc_output_buffer);
-            fwrite(agc_output_buffer, sizeof(float), input.input_size, stdout);
+            fwrite(agc_output_buffer, sizeof(float), input.input_size, outfile);
             TRY_YIELD;
         }
     }
@@ -1521,13 +1579,13 @@ int main(int argc, char *argv[])
 
         if(suboptimal) { errhead(); fprintf(stderr,"note: suboptimal rational resampler chosen.\n"); }
 
-        if(!initialize_buffers()) return -2;
+        if(!initialize_buffers(infile,outfile)) return -2;
 
-        if(decimation==1&&interpolation==1) { sendbufsize(the_bufsize); clone_(the_bufsize); } //copy input to output in this special case (and stick in this function).
+        if(decimation==1&&interpolation==1) { sendbufsize(the_bufsize,outfile); clone_(the_bufsize,infile,outfile); } //copy input to output in this special case (and stick in this function).
 
         //Alloc output buffer
         int resampler_output_buffer_size=(the_bufsize*interpolation)/decimation;
-        sendbufsize(resampler_output_buffer_size);
+        sendbufsize(resampler_output_buffer_size,outfile);
         float* resampler_output_buffer=(float*)malloc(sizeof(float)*resampler_output_buffer_size);
         float* suboptimal_resampler_temp_buffer = (suboptimal)?(float*)malloc(sizeof(float)*the_bufsize*interpolation):NULL;
 
@@ -1543,11 +1601,11 @@ int main(int argc, char *argv[])
             FEOF_CHECK;
             if(d.input_processed==0) d.input_processed=the_bufsize;
             else memcpy(input_buffer, input_buffer+d.input_processed, sizeof(float)*(the_bufsize-d.input_processed));
-            fread(input_buffer+(the_bufsize-d.input_processed), sizeof(float), d.input_processed, stdin);
+            fread(input_buffer+(the_bufsize-d.input_processed), sizeof(float), d.input_processed, infile);
             //if(suboptimal) d=suboptimal_rational_resampler_ff(input_buffer, resampler_output_buffer, the_bufsize, interpolation, decimation, taps, taps_length, suboptimal_resampler_temp_buffer); else
             d=rational_resampler_ff(input_buffer, resampler_output_buffer, the_bufsize, interpolation, decimation, taps, taps_length, d.last_taps_delay);
             //fprintf(stderr,"resampled %d %d, %d\n",d.output_size, d.input_processed, d.input_processed);
-            fwrite(resampler_output_buffer, sizeof(float), d.output_size, stdout);
+            fwrite(resampler_output_buffer, sizeof(float), d.output_size, outfile);
             TRY_YIELD;
         }
     }
@@ -1584,10 +1642,10 @@ int main(int argc, char *argv[])
         errhead(); fprintf(stderr,"use_prefilter = %d, num_poly_points = %d, transition_bw = %g, window = %s\n", 
             use_prefilter, num_poly_points, transition_bw, firdes_get_string_from_window(window));
 
-        if(!initialize_buffers()) return -2;
-        sendbufsize(the_bufsize / rate);
+        if(!initialize_buffers(infile,outfile)) return -2;
+        sendbufsize(the_bufsize / rate,outfile);
 
-        if(rate==1) clone_(the_bufsize); //copy input to output in this special case (and stick in this function).
+        if(rate==1) clone_(the_bufsize, infile, outfile); //copy input to output in this special case (and stick in this function).
 
         //Generate filter taps
         int taps_length = 0;
@@ -1607,9 +1665,9 @@ int main(int argc, char *argv[])
             FEOF_CHECK;
             if(d.input_processed==0) d.input_processed=the_bufsize;
             else memcpy(input_buffer, input_buffer+d.input_processed, sizeof(float)*(the_bufsize-d.input_processed));
-            fread(input_buffer+(the_bufsize-d.input_processed), sizeof(float), d.input_processed, stdin);
+            fread(input_buffer+(the_bufsize-d.input_processed), sizeof(float), d.input_processed, infile);
             fractional_decimator_ff(input_buffer, output_buffer, the_bufsize, &d);
-            fwrite(output_buffer, sizeof(float), d.output_size, stdout);
+            fwrite(output_buffer, sizeof(float), d.output_size, outfile);
             //fprintf(stderr, "os = %d, ip = %d\n", d.output_size, d.input_processed);
             TRY_YIELD;
         }
@@ -1646,10 +1704,10 @@ int main(int argc, char *argv[])
         errhead(); fprintf(stderr,"use_prefilter = %d, num_poly_points = %d, transition_bw = %g, window = %s\n",
             use_prefilter, num_poly_points, transition_bw, firdes_get_string_from_window(window));
 
-        if(!initialize_buffers()) return -2;
-        sendbufsize(the_bufsize / rate);
+        if(!initialize_buffers(infile,outfile)) return -2;
+        sendbufsize(the_bufsize / rate,outfile);
 
-        if(rate==1) clone_(the_bufsize); //copy input to output in this special case (and stick in this function).
+        if(rate==1) clone_(the_bufsize, infile, outfile); //copy input to output in this special case (and stick in this function).
 
         //Generate filter taps
         int taps_length = 0;
@@ -1673,9 +1731,9 @@ int main(int argc, char *argv[])
             FEOF_CHECK;
             if(d.input_processed==0) d.input_processed=the_bufsize;
             else memcpy(input_buffer_f, input_buffer_f+d.input_processed, sizeof(complexf)*(the_bufsize-d.input_processed));
-            fread(input_buffer_f+(the_bufsize-d.input_processed), sizeof(complexf), d.input_processed, stdin);
+            fread(input_buffer_f+(the_bufsize-d.input_processed), sizeof(complexf), d.input_processed, infile);
             fractional_decimator_cc(input_buffer_f, output_buffer_f, the_bufsize, &d);
-            fwrite(output_buffer_f, sizeof(complexf), d.output_size, stdout);
+            fwrite(output_buffer_f, sizeof(complexf), d.output_size, outfile);
             //fprintf(stderr, "os = %d, ip = %d\n", d.output_size, d.input_processed);
             TRY_YIELD;
         }
@@ -1707,8 +1765,8 @@ int main(int argc, char *argv[])
             octave|=!strcmp("--octave",argv[6]);
         }
 
-        if(!initialize_buffers()) return -2;
-        sendbufsize(fft_size);
+        if(!initialize_buffers(infile,outfile)) return -2;
+        sendbufsize(fft_size,outfile);
 
         //make FFT plan
         complexf* input=(complexf*)fft_malloc(sizeof(complexf)*fft_size);
@@ -1725,18 +1783,18 @@ int main(int argc, char *argv[])
             FEOF_CHECK;
             if(every_n_samples>fft_size)
             {
-                fread(input, sizeof(complexf), fft_size, stdin);
+                fread(input, sizeof(complexf), fft_size, infile);
                 //skipping samples before next FFT (but fseek doesn't work for pipes)
                 for(int seek_remain=every_n_samples-fft_size;seek_remain>0;seek_remain-=the_bufsize)
                 {
-                    fread(temp_f, sizeof(complexf), MIN_M(the_bufsize,seek_remain), stdin);
+                    fread(temp_f, sizeof(complexf), MIN_M(the_bufsize,seek_remain), infile);
                 }
             }
             else
             {
                 //overlapped FFT
                 for(int i=0;i<fft_size-every_n_samples;i++) input[i]=input[i+every_n_samples];
-                fread(input+fft_size-every_n_samples, sizeof(complexf), every_n_samples, stdin);
+                fread(input+fft_size-every_n_samples, sizeof(complexf), every_n_samples, infile);
             }
             //apply_window_c(input,windowed,fft_size,window);
             apply_precalculated_window_c(input,windowed,fft_size,windowt);
@@ -1753,7 +1811,7 @@ int main(int argc, char *argv[])
                     "refreshdata;\n"
                 );
             }
-            else fwrite(output, sizeof(complexf), fft_size, stdout);
+            else fwrite(output, sizeof(complexf), fft_size, outfile);
             TRY_YIELD;
         }
     }
@@ -1763,14 +1821,14 @@ int main(int argc, char *argv[])
         float add_db=0;
         if(argc>=3) sscanf(argv[2],"%g",&add_db);
 
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
 
         for(;;)
         {
             FEOF_CHECK;
-            fread(input_buffer, sizeof(complexf), the_bufsize, stdin);
+            fread(input_buffer, sizeof(complexf), the_bufsize, infile);
             logpower_cf((complexf*)input_buffer,output_buffer, the_bufsize, add_db);
-            fwrite(output_buffer, sizeof(float), the_bufsize, stdout);
+            fwrite(output_buffer, sizeof(float), the_bufsize, outfile);
             TRY_YIELD;
         }
     }
@@ -1799,11 +1857,11 @@ int main(int argc, char *argv[])
             }
             FEOF_CHECK;
             for(n = 0; n < avgnumber; n++) {
-                fread (input, sizeof(float)*2, fft_size, stdin);
+                fread (input, sizeof(float)*2, fft_size, infile);
                 accumulate_power_cf((complexf*)input, output, fft_size);
             }
             log_ff(output, output, fft_size, add_db);
-            fwrite (output, sizeof(float), fft_size, stdout);
+            fwrite (output, sizeof(float), fft_size, outfile);
             TRY_YIELD;
         }
         return 0;
@@ -1814,17 +1872,17 @@ int main(int argc, char *argv[])
         if(argc<=2) return badsyntax("need required parameters (fft_size)");
         int fft_size;
         sscanf(argv[2],"%d",&fft_size);
-        if(!getbufsize()) return -2; //dummy
-        sendbufsize(fft_size);
+        if(!getbufsize(infile)) return -2; //dummy
+        sendbufsize(fft_size,outfile);
         float* input_buffer_s1 = (float*)malloc(sizeof(float)*fft_size/2);
         float* input_buffer_s2 = (float*)malloc(sizeof(float)*fft_size/2);
         for(;;)
         {
             FEOF_CHECK;
-            fread(input_buffer_s1, sizeof(float), fft_size/2, stdin);
-            fread(input_buffer_s2, sizeof(float), fft_size/2, stdin);
-            fwrite(input_buffer_s2, sizeof(float), fft_size/2, stdout);
-            fwrite(input_buffer_s1, sizeof(float), fft_size/2, stdout);
+            fread(input_buffer_s1, sizeof(float), fft_size/2, infile);
+            fread(input_buffer_s2, sizeof(float), fft_size/2, infile);
+            fwrite(input_buffer_s2, sizeof(float), fft_size/2, outfile);
+            fwrite(input_buffer_s1, sizeof(float), fft_size/2, outfile);
             TRY_YIELD;
         }
     }
@@ -1834,16 +1892,16 @@ int main(int argc, char *argv[])
         if(argc<=2) return badsyntax("need required parameters (fft_size)");
         int fft_size;
         sscanf(argv[2],"%d",&fft_size);
-        if(!getbufsize()) return -2; 
-        sendbufsize(fft_size);
+        if(!getbufsize(infile)) return -2;
+        sendbufsize(fft_size,outfile);
         float* input_buffer_s1 = (float*)malloc(sizeof(float)*fft_size/2);
         float* input_buffer_s2 = (float*)malloc(sizeof(float)*fft_size/2);
         for(;;)
         {
             FEOF_CHECK;
-            fread(input_buffer_s1, sizeof(float), fft_size/2, stdin);
-            fread(input_buffer_s2, sizeof(float), fft_size/2, stdin);
-            fwrite(input_buffer_s1, sizeof(float), fft_size/2, stdout);
+            fread(input_buffer_s1, sizeof(float), fft_size/2, infile);
+            fread(input_buffer_s2, sizeof(float), fft_size/2, infile);
+            fwrite(input_buffer_s1, sizeof(float), fft_size/2, outfile);
             TRY_YIELD;
         }
     }
@@ -1856,20 +1914,20 @@ int main(int argc, char *argv[])
         if(argc<=2) return badsyntax("need required parameters (fft_size)");
         int fft_size;
         sscanf(argv[2],"%d",&fft_size);
-        if(!getbufsize()) return -2; //dummy
+        if(!getbufsize(infile)) return -2; //dummy
 
         fft_compress_ima_adpcm_t job;
         fft_compress_ima_adpcm_init(&job, fft_size);
 
-        sendbufsize(job.real_data_size);
+        sendbufsize(job.real_data_size,outfile);
 
         unsigned char* output = (unsigned char*) malloc(sizeof(unsigned char) * (job.real_data_size / 2));
         for(;;)
         {
             FEOF_CHECK;
-            fread(fft_compress_ima_adpcm_get_write_pointer(&job), sizeof(float), fft_size, stdin);
+            fread(fft_compress_ima_adpcm_get_write_pointer(&job), sizeof(float), fft_size, infile);
             fft_compress_ima_adpcm(&job, output);
-            fwrite(output, sizeof(unsigned char), job.real_data_size/2, stdout);
+            fwrite(output, sizeof(unsigned char), job.real_data_size/2, outfile);
             TRY_YIELD;
         }
 
@@ -1923,7 +1981,7 @@ int main(int argc, char *argv[])
         float transition_bw;
         window_t window = WINDOW_DEFAULT;
         int fd;
-        if(fd=init_fifo(argc,argv))
+        if(0 != (fd=init_fifo(argc,argv)))
         {
             while(!read_fifo_ctl(fd,"%g %g\n",&low_cut,&high_cut)) usleep(10000);
             if(argc<=4) return badsyntax("need more required parameters (transition_bw)");
@@ -1948,7 +2006,7 @@ int main(int argc, char *argv[])
         errhead(); fprintf(stderr,"(fft_size = %d) = (taps_length = %d) + (input_size = %d) - 1\n(overlap_length = %d) = taps_length - 1\n", fft_size, taps_length, input_size, overlap_length );
         if (fft_size<=2) return badsyntax("FFT size error.");
 
-        if(!sendbufsize(getbufsize())) return -2;
+        if(!sendbufsize(getbufsize(infile),outfile)) return -2;
 
         //prepare making the filter and doing FFT on it
         complexf* taps=(complexf*)calloc(sizeof(complexf),fft_size); //initialize to zero
@@ -1981,12 +2039,12 @@ int main(int argc, char *argv[])
             for(int odd=0;;odd=!odd) //the processing loop
             {
                 FEOF_CHECK;
-                fread(input, sizeof(complexf), input_size, stdin);
+                fread(input, sizeof(complexf), input_size, infile);
                 fft_plan_t* plan_inverse = (odd)?plan_inverse_2:plan_inverse_1;
                 fft_plan_t* plan_contains_last_overlap = (odd)?plan_inverse_1:plan_inverse_2; //the other
                 complexf* last_overlap = (complexf*)plan_contains_last_overlap->output + input_size; //+ fft_size - overlap_length;
                 apply_fir_fft_cc (plan_forward, plan_inverse, taps_fft, last_overlap, overlap_length);
-                int returned=fwrite(plan_inverse->output, sizeof(complexf), input_size, stdout);
+                int returned=fwrite(plan_inverse->output, sizeof(complexf), input_size, outfile);
                 if(read_fifo_ctl(fd,"%g %g\n",&low_cut,&high_cut)) break;
                 TRY_YIELD;
             }
@@ -1999,15 +2057,15 @@ int main(int argc, char *argv[])
 
     if( (!strcmp(argv[1],"encode_ima_adpcm_i16_u8"))||(!strcmp(argv[1],"encode_ima_adpcm_s16_u8")) )
     {
-        if(!sendbufsize(initialize_buffers()/2)) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile)/2,outfile)) return -2;
         ima_adpcm_state_t d;
         d.index=d.previousValue=0;
         for(;;)
         {
             FEOF_CHECK;
-            fread(buffer_i16, sizeof(short), the_bufsize, stdin);
+            fread(buffer_i16, sizeof(short), the_bufsize, infile);
             d=encode_ima_adpcm_i16_u8(buffer_i16, buffer_u8, the_bufsize, d);
-            fwrite(buffer_u8, sizeof(unsigned char), the_bufsize/2, stdout);
+            fwrite(buffer_u8, sizeof(unsigned char), the_bufsize/2, outfile);
             TRY_YIELD;
         }
     }
@@ -2016,13 +2074,13 @@ int main(int argc, char *argv[])
     {
         ima_adpcm_state_t d;
         d.index=d.previousValue=0;
-        if(!sendbufsize(initialize_buffers()*2)) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile)*2,outfile)) return -2;
         for(;;)
         {
             FEOF_CHECK;
-            fread(buffer_u8, sizeof(unsigned char), the_bufsize, stdin);
+            fread(buffer_u8, sizeof(unsigned char), the_bufsize, infile);
             d=decode_ima_adpcm_u8_i16(buffer_u8, buffer_i16, the_bufsize, d);
-            fwrite(buffer_i16, sizeof(short), the_bufsize*2, stdout);
+            fwrite(buffer_i16, sizeof(short), the_bufsize*2, outfile);
             TRY_YIELD;
         }
     }
@@ -2036,16 +2094,16 @@ int main(int argc, char *argv[])
         int reads_per_second;
         sscanf(argv[3],"%d",&reads_per_second);
         int flowcontrol_bufsize=ceil(1.*(double)data_rate/reads_per_second);
-        if(!getbufsize()) return -2;
-        sendbufsize(flowcontrol_bufsize);
+        if(!getbufsize(infile)) return -2;
+        sendbufsize(flowcontrol_bufsize,outfile);
         unsigned char* flowcontrol_buffer = (unsigned char*)malloc(sizeof(unsigned char)*flowcontrol_bufsize);
         int flowcontrol_sleep=floor(1000000./reads_per_second);
         errhead(); fprintf(stderr, "flowcontrol_bufsize = %d, flowcontrol_sleep = %d\n", flowcontrol_bufsize, flowcontrol_sleep);
         for(;;)
         {
             FEOF_CHECK;
-            fread(flowcontrol_buffer, sizeof(unsigned char), flowcontrol_bufsize, stdin);
-            fwrite(flowcontrol_buffer, sizeof(unsigned char), flowcontrol_bufsize, stdout);
+            fread(flowcontrol_buffer, sizeof(unsigned char), flowcontrol_bufsize, infile);
+            fwrite(flowcontrol_buffer, sizeof(unsigned char), flowcontrol_bufsize, outfile);
             usleep(flowcontrol_sleep);
             TRY_YIELD;
         }
@@ -2070,7 +2128,7 @@ int main(int argc, char *argv[])
 
         int flowcontrol_readsize, flowcontrol_bufsize, got_bufsize;
 
-        if(!(got_bufsize=getbufsize())) return -2;
+        if(!(got_bufsize=getbufsize(infile))) return -2;
 
         if(reads_per_second)
         {
@@ -2089,8 +2147,8 @@ int main(int argc, char *argv[])
 
         fcntl(STDIN_FILENO, F_SETFL, fcntl(STDIN_FILENO, F_GETFL, 0) | O_NONBLOCK);
 
-        sendbufsize(flowcontrol_readsize);
-        fflush(stdout);
+        sendbufsize(flowcontrol_readsize,outfile);
+        fflush(outfile);
 
         int flowcontrol_is_buffering = 1;
         int read_return;
@@ -2138,7 +2196,7 @@ int main(int argc, char *argv[])
                 {
                     //if(thrust) fprintf(stderr, "flowcontrol: %d .. thrust\n", thrust);
                     write(STDOUT_FILENO, flowcontrol_buffer, flowcontrol_readsize);
-                    fflush(stdout);
+                    fflush(outfile);
                     //fsync(STDOUT_FILENO);
                     memmove(flowcontrol_buffer, flowcontrol_buffer+flowcontrol_readsize, flowcontrol_bufindex-flowcontrol_readsize);
                     flowcontrol_bufindex -= flowcontrol_readsize;
@@ -2155,7 +2213,7 @@ int main(int argc, char *argv[])
     if(!strcmp(argv[1],"through"))
     {
         struct timespec start_time, end_time;
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
 
         int time_now_sec=0;
         int buffer_count=0;
@@ -2167,7 +2225,7 @@ int main(int argc, char *argv[])
         for(;;)
         {
             FEOF_CHECK;
-            fread(through_buffer, sizeof(float), the_bufsize, stdin);
+            fread(through_buffer, sizeof(float), the_bufsize, infile);
 
             if(!time_now_sec)
             {
@@ -2184,7 +2242,7 @@ int main(int argc, char *argv[])
                     time_now_sec=ceil(timetaken);
                 }
             }
-            fwrite(through_buffer, sizeof(float), the_bufsize, stdout);
+            fwrite(through_buffer, sizeof(float), the_bufsize, outfile);
             buffer_count++;
             TRY_YIELD;
         }
@@ -2195,7 +2253,7 @@ int main(int argc, char *argv[])
         float q_value = 0;
         if(argc>=3) sscanf(argv[2],"%g",&q_value);
 
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;)
         {
             FEOF_CHECK;
@@ -2217,7 +2275,7 @@ int main(int argc, char *argv[])
         unsigned wait_for_this_sample;
         sscanf(argv[2],"%u",&wait_for_this_sample);
 
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         unsigned char* samplerf_buf = (unsigned char*) malloc(16*the_bufsize);
         for(;;)
         {
@@ -2230,14 +2288,14 @@ int main(int argc, char *argv[])
                 *((unsigned*)(&samplerf_buf[16*i+12])) = 0;
 
             }
-            fwrite(samplerf_buf, 16, the_bufsize, stdout);
+            fwrite(samplerf_buf, 16, the_bufsize, outfile);
             TRY_YIELD;
         }
     }
 
     if(!strcmp(argv[1],"add_dcoffset_cc"))
     {
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;)
         {
             FEOF_CHECK;
@@ -2250,7 +2308,7 @@ int main(int argc, char *argv[])
 
     if(!strcmp(argv[1],"fmmod_fc"))
     {
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         float last_phase = 0;
         for(;;)
         {
@@ -2269,7 +2327,7 @@ int main(int argc, char *argv[])
         float new_amplitude;
         sscanf(argv[2],"%g",&new_amplitude);
 
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;)
         {
             FEOF_CHECK;
@@ -2282,37 +2340,37 @@ int main(int argc, char *argv[])
 
     if((!strcmp(argv[1],"mono2stereo_i16"))||(!strcmp(argv[1],"mono2stereo_s16")))
     {
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;)
         {
             FEOF_CHECK;
-            fread (input_buffer, sizeof(short), the_bufsize, stdin);
+            fread (input_buffer, sizeof(short), the_bufsize, infile);
             for(int i=0;i<the_bufsize;i++)
             {
                 *(((short*)output_buffer)+2*i)=*(((short*)input_buffer)+i);
                 *(((short*)output_buffer)+2*i+1)=*(((short*)input_buffer)+i);
             }
-            fwrite (output_buffer, sizeof(short)*2, the_bufsize, stdout);
+            fwrite (output_buffer, sizeof(short)*2, the_bufsize, outfile);
             TRY_YIELD;
         }
     }
 
     if (!strcmp(argv[1], "stereo2mono_s16")) {
-        if (!sendbufsize(initialize_buffers())) return -2;
+        if (!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;) {
             FEOF_CHECK;
-            fread(input_buffer, sizeof(short), the_bufsize, stdin);
+            fread(input_buffer, sizeof(short), the_bufsize, infile);
             for (int i = 0; i < the_bufsize / 2; i++) {
                 ((short*) output_buffer)[i] = ((short*) input_buffer)[i * 2] / 2 + ((short*) input_buffer)[i * 2 + 1] / 2;
             }
-            fwrite(output_buffer, sizeof(short), the_bufsize / 2, stdout);
+            fwrite(output_buffer, sizeof(short), the_bufsize / 2, outfile);
             TRY_YIELD;
         }
     }
 
     if(!strcmp(argv[1],"squelch_and_smeter_cc"))
     {
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         float power;
         float squelch_level;
         int decimation;
@@ -2351,12 +2409,12 @@ int main(int argc, char *argv[])
             if(squelch_level==0||power>=squelch_level)
             {
                 //fprintf(stderr,"P");
-                fwrite(input_buffer, sizeof(complexf), the_bufsize, stdout);
+                fwrite(input_buffer, sizeof(complexf), the_bufsize, outfile);
             }
             else
             {
                 //fprintf(stderr,"S");
-                fwrite(zerobuf, sizeof(complexf), the_bufsize, stdout);
+                fwrite(zerobuf, sizeof(complexf), the_bufsize, outfile);
             }
             if(read_fifo_ctl(fd,"%g\n",&squelch_level)) { errhead(); fprintf(stderr, "new squelch level is %g\n", squelch_level); }
             TRY_YIELD;
@@ -2393,8 +2451,8 @@ int main(int argc, char *argv[])
         if(fastddc_init(&ddc, transition_bw, decimation, 0)) { badsyntax("error in fastddc_init()"); return 1; }
         fastddc_print(&ddc,"fastddc_fwd_cc");
 
-        if(!initialize_buffers()) return -2;
-        sendbufsize(ddc.fft_size);
+        if(!initialize_buffers(infile,outfile)) return -2;
+        sendbufsize(ddc.fft_size, outfile);
 
         //make FFT plan
         complexf* input =    (complexf*)fft_malloc(sizeof(complexf)*ddc.fft_size);
@@ -2413,11 +2471,11 @@ int main(int argc, char *argv[])
             FEOF_CHECK;
             //overlapped FFT
             for(int i=0;i<ddc.overlap_length;i++) input[i]=input[i+ddc.input_size];
-            fread(input+ddc.overlap_length, sizeof(complexf), ddc.input_size, stdin);
+            fread(input+ddc.overlap_length, sizeof(complexf), ddc.input_size, infile);
             //apply_window_c(input,windowed,ddc.fft_size,window);
             memcpy(windowed, input, ddc.fft_size*sizeof(complexf)); //we can switch off windows; TODO: it is likely that we shouldn't apply a window to both the FFT and the filter.
             fft_execute(plan);
-            fwrite(output, sizeof(complexf), ddc.fft_size, stdout);
+            fwrite(output, sizeof(complexf), ddc.fft_size, outfile);
             TRY_YIELD;
         }
     }
@@ -2458,8 +2516,8 @@ int main(int argc, char *argv[])
         if(fastddc_init(&ddc, transition_bw, decimation, shift_rate)) { badsyntax("error in fastddc_init()"); return 1; }
         fastddc_print(&ddc,"fastddc_inv_cc");
 
-        if(!initialize_buffers()) return -2;
-        sendbufsize(ddc.post_input_size/ddc.post_decimation); //TODO not exactly correct
+        if(!initialize_buffers(infile,outfile)) return -2;
+        sendbufsize(ddc.post_input_size/ddc.post_decimation, outfile); //TODO not exactly correct
 
         //prepare making the filter and doing FFT on it
         complexf* taps=(complexf*)calloc(sizeof(complexf),ddc.fft_size); //initialize to zero
@@ -2489,9 +2547,9 @@ int main(int argc, char *argv[])
         for(;;)
         {
             FEOF_CHECK;
-            fread(input, sizeof(complexf), ddc.fft_size, stdin);
+            fread(input, sizeof(complexf), ddc.fft_size, infile);
             shift_stat = fastddc_inv_cc(input, output, &ddc, plan_inverse, taps_fft, shift_stat);
-            fwrite(output, sizeof(complexf), shift_stat.output_size, stdout);
+            fwrite(output, sizeof(complexf), shift_stat.output_size, outfile);
             //fprintf(stderr, "ss os = %d\n", shift_stat.output_size);
             TRY_YIELD;
             if(read_fifo_ctl(fd,"%g\n",&shift_rate)) break;
@@ -2509,14 +2567,14 @@ int main(int argc, char *argv[])
         sscanf(argv[2],"%d",&fft_size);
 
         complexf* fft_input=(complexf*)malloc(sizeof(complexf)*fft_size);
-        initialize_buffers();
-        if(!sendbufsize(fft_size)) return -2;
+        initialize_buffers(infile,outfile);
+        if(!sendbufsize(fft_size, outfile)) return -2;
 
         printf("setenv(\"GNUTERM\",\"X11 noraise\");y=zeros(1,%d);semilogy(y,\"ydatasource\",\"y\");\n",fft_size);
         for(;;)
         {
             FEOF_CHECK;
-            fread(fft_input, sizeof(complexf), fft_size, stdin);
+            fread(fft_input, sizeof(complexf), fft_size, infile);
             printf("fftdata=[");
             //we have to swap the two parts of the array to get a valid spectrum
             for(int i=fft_size/2;i<fft_size;i++) printf("(%g)+(%g)*i ",iof(fft_input,i),qof(fft_input,i));
@@ -2544,11 +2602,11 @@ int main(int argc, char *argv[])
     {
         unsigned long long status_shr = 0;
         unsigned char output;
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         unsigned char i=0;
         for(;;)
         {
-            if((output=psk31_varicode_decoder_push(&status_shr, getchar()))) { putchar(output); fflush(stdout); }
+            if((output=psk31_varicode_decoder_push(&status_shr, getchar()))) { putchar(output); fflush(outfile); }
             if(i++) continue; //do the following at every 256th execution of the loop body:
             FEOF_CHECK;
             TRY_YIELD;
@@ -2557,7 +2615,7 @@ int main(int argc, char *argv[])
 
     if(!strcmp(argv[1],"invert_u8_u8"))
     {
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         unsigned char i=0;
         for(;;)
         {
@@ -2572,11 +2630,11 @@ int main(int argc, char *argv[])
     {
         static rtty_baudot_decoder_t status_baudot; //created on .bss -> initialized to 0
         unsigned char output;
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         unsigned char i=0;
         for(;;)
         {
-            if((output=rtty_baudot_decoder_push(&status_baudot, getchar()))) { putchar(output); fflush(stdout); }
+            if((output=rtty_baudot_decoder_push(&status_baudot, getchar()))) { putchar(output); fflush(outfile); }
             if(i++) continue; //do the following at every 256th execution of the loop body:
             FEOF_CHECK;
             TRY_YIELD;
@@ -2587,11 +2645,11 @@ int main(int argc, char *argv[])
     {
         unsigned char fig_mode = 0;
         unsigned char output;
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         unsigned char i=0;
         for(;;)
         {
-            if((output=rtty_baudot_decoder_lookup(&fig_mode, getchar()))) { putchar(output); fflush(stdout); }
+            if((output=rtty_baudot_decoder_lookup(&fig_mode, getchar()))) { putchar(output); fflush(outfile); }
             if(i++) continue; //do the following at every 256th execution of the loop body:
             FEOF_CHECK;
             TRY_YIELD;
@@ -2600,7 +2658,7 @@ int main(int argc, char *argv[])
 
     if(!strcmp(argv[1],"binary_slicer_f_u8"))
     {
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;)
         {
             FEOF_CHECK;
@@ -2634,7 +2692,7 @@ int main(int argc, char *argv[])
         serial.bit_sampling_width_ratio = 0.4;
         serial.input_used=0;
 
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
 
         for(;;)
         {
@@ -2642,14 +2700,14 @@ int main(int argc, char *argv[])
             if(serial.input_used)
             {
                 memmove(input_buffer, input_buffer+serial.input_used, sizeof(float)*(the_bufsize-serial.input_used));
-                fread(input_buffer+(the_bufsize-serial.input_used), sizeof(float), serial.input_used, stdin);
+                fread(input_buffer+(the_bufsize-serial.input_used), sizeof(float), serial.input_used, infile);
             }
-            else fread(input_buffer, sizeof(float), the_bufsize, stdin); //should happen only on the first run
+            else fread(input_buffer, sizeof(float), the_bufsize, infile); //should happen only on the first run
             serial_line_decoder_f_u8(&serial,input_buffer, (unsigned char*)output_buffer, the_bufsize);
             //printf("now in | ");
             if(serial.input_used==0) { errhead(); fprintf(stderr, "error: serial_line_decoder_f_u8() got stuck.\n"); return -3; }
             //printf("now out %d | ", serial.output_size);
-            fwrite(output_buffer, sizeof(unsigned char), serial.output_size, stdout);
+            fwrite(output_buffer, sizeof(unsigned char), serial.output_size, outfile);
             TRY_YIELD;
         }
     }
@@ -2679,7 +2737,7 @@ int main(int argc, char *argv[])
         }
         else return badsyntax("invalid pll_type. Valid values are:\n\t1: PLL_P_CONTROLLER\n\t2: PLL_PI_CONTROLLER");
 
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
 
         for(;;)
         {
@@ -2687,9 +2745,9 @@ int main(int argc, char *argv[])
             FREAD_C;
             //fprintf(stderr, "| i");
             // pll_cc(&pll, (complexf*)input_buffer, output_buffer, NULL, the_bufsize);
-            // fwrite(output_buffer, sizeof(float), the_bufsize, stdout);
+            // fwrite(output_buffer, sizeof(float), the_bufsize, outfile);
             pll_cc(&pll, (complexf*)input_buffer, NULL, (complexf*)output_buffer, the_bufsize);
-            fwrite(output_buffer, sizeof(complexf), the_bufsize, stdout);
+            fwrite(output_buffer, sizeof(complexf), the_bufsize, outfile);
             //fprintf(stderr, "| o");
             TRY_YIELD;
         }
@@ -2741,8 +2799,8 @@ int main(int argc, char *argv[])
         if(output_indexes) sampled_indexes = (unsigned*)malloc(sizeof(float)*the_bufsize);
         if(output_indexes) { errhead(); fprintf(stderr, "--output_indexes mode\n"); }
 
-        if(!initialize_buffers()) return -2;
-        sendbufsize(the_bufsize/decimation);
+        if(!initialize_buffers(infile,outfile)) return -2;
+        sendbufsize(the_bufsize/decimation, outfile);
 
         timing_recovery_state_t state = timing_recovery_init(algorithm, decimation, add_q, loop_gain, max_error, debug_every_nth, octave_save_path);
 
@@ -2753,18 +2811,18 @@ int main(int argc, char *argv[])
             FEOF_CHECK;
             timing_recovery_cc((complexf*)input_buffer, (complexf*)output_buffer, the_bufsize, timing_error, (int*)sampled_indexes, &state);
             //fprintf(stderr, "trcc is=%d, os=%d, ip=%d\n",the_bufsize, state.output_size, state.input_processed);
-            if(timing_error) fwrite(timing_error, sizeof(float), state.output_size, stdout);
+            if(timing_error) fwrite(timing_error, sizeof(float), state.output_size, outfile);
             else if(sampled_indexes) 
             {
                 for(int i=0;i<state.output_size;i++) sampled_indexes[i]+=buffer_start_counter;
-                fwrite(sampled_indexes, sizeof(unsigned), state.output_size, stdout);
+                fwrite(sampled_indexes, sizeof(unsigned), state.output_size, outfile);
             }
-            else fwrite(output_buffer, sizeof(complexf), state.output_size, stdout);
+            else fwrite(output_buffer, sizeof(complexf), state.output_size, outfile);
             TRY_YIELD;
             //fprintf(stderr, "state.input_processed = %d\n", state.input_processed);
             buffer_start_counter+=state.input_processed;
             memmove((complexf*)input_buffer,((complexf*)input_buffer)+state.input_processed,(the_bufsize-state.input_processed)*sizeof(complexf)); //memmove lets the source and destination overlap
-            fread(((complexf*)input_buffer)+(the_bufsize-state.input_processed), sizeof(complexf), state.input_processed, stdin);
+            fread(((complexf*)input_buffer)+(the_bufsize-state.input_processed), sizeof(complexf), state.input_processed, infile);
             //fprintf(stderr,"iskip=%d state.output_size=%d start=%x target=%x skipcount=%x \n",state.input_processed,state.output_size,input_buffer, ((complexf*)input_buffer)+(BIG_BUFSIZE-state.input_processed),(BIG_BUFSIZE-state.input_processed));
         }
     }
@@ -2783,10 +2841,10 @@ int main(int argc, char *argv[])
         if(argc>4) mode2d = !strcmp(argv[4], "--2d"); 
         complexf* read_buf = (complexf*)malloc(sizeof(complexf)*the_bufsize);
 
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;)
         {
-            fread(read_buf, sizeof(complexf), samples_to_plot, stdin);          
+            fread(read_buf, sizeof(complexf), samples_to_plot, infile);
             printf("N = %d;\nisig = [", samples_to_plot);
             for(int i=0;i<samples_to_plot;i++) printf("%f ", iof(read_buf, i));
             printf("];\nqsig = [");
@@ -2795,11 +2853,11 @@ int main(int argc, char *argv[])
             if(mode2d) printf("subplot(2,1,1);\nplot(zsig,isig);\nsubplot(2,1,2);\nplot(zsig,qsig);\n");
             else printf("plot3(isig,zsig,qsig);\n");
             //printf("xlim([-1 1]);\nzlim([-1 1]);\n");
-            fflush(stdout);
-            //if(fseek(stdin, (out_of_n_samples - samples_to_plot)*sizeof(complexf), SEEK_CUR)<0) { perror("fseek error"); return -3; } //this cannot be used on stdin
+            fflush(outfile);
+            //if(fseek(infile, (out_of_n_samples - samples_to_plot)*sizeof(complexf), SEEK_CUR)<0) { perror("fseek error"); return -3; } //this cannot be used on infile
             for(int seek_remain=out_of_n_samples-samples_to_plot;seek_remain>0;seek_remain-=samples_to_plot)
             {
-                fread(read_buf, sizeof(complexf), MIN_M(samples_to_plot,seek_remain), stdin);
+                fread(read_buf, sizeof(complexf), MIN_M(samples_to_plot,seek_remain), infile);
             }
             FEOF_CHECK;
             TRY_YIELD;
@@ -2813,13 +2871,13 @@ int main(int argc, char *argv[])
         sscanf(argv[2],"%d",&n_psk);
         if(n_psk<=0 || n_psk>256) return badsyntax("n_psk should be between 1 and 256");
 
-        if(!initialize_buffers()) return -2;
-        sendbufsize(the_bufsize);
+        if(!initialize_buffers(infile,outfile)) return -2;
+        sendbufsize(the_bufsize, outfile);
 
         for(;;)
         {
             FEOF_CHECK;
-            fread((unsigned char*)input_buffer, sizeof(unsigned char), the_bufsize, stdin);
+            fread((unsigned char*)input_buffer, sizeof(unsigned char), the_bufsize, infile);
             psk_modulator_u8_c((unsigned char*)input_buffer, (complexf*)output_buffer, the_bufsize, n_psk);
             FWRITE_C;
             TRY_YIELD;
@@ -2835,16 +2893,16 @@ int main(int argc, char *argv[])
         if(argc<=3) return badsyntax("need required parameter (ntimes)");
         sscanf(argv[3],"%d",&ntimes);   
         if(ntimes<=0) return badsyntax("ntimes should be >0");
-        if(!initialize_buffers()) return -2;
-        sendbufsize(the_bufsize*ntimes);
+        if(!initialize_buffers(infile,outfile)) return -2;
+        sendbufsize(the_bufsize*ntimes, outfile);
         unsigned char* local_input_buffer = (unsigned char*)malloc(sizeof(unsigned char)*the_bufsize*sample_size_bytes);
         unsigned char* local_output_buffer = (unsigned char*)malloc(sizeof(unsigned char)*the_bufsize*sample_size_bytes*ntimes);
         for(;;)
         {
             FEOF_CHECK;
-            fread((void*)local_input_buffer, sizeof(unsigned char), the_bufsize*sample_size_bytes, stdin);
+            fread((void*)local_input_buffer, sizeof(unsigned char), the_bufsize*sample_size_bytes, infile);
             duplicate_samples_ntimes_u8_u8(local_input_buffer, local_output_buffer, the_bufsize*sample_size_bytes, sample_size_bytes, ntimes);
-            fwrite((void*)local_output_buffer, sizeof(unsigned char), the_bufsize*sample_size_bytes*ntimes, stdout);
+            fwrite((void*)local_output_buffer, sizeof(unsigned char), the_bufsize*sample_size_bytes*ntimes, outfile);
             TRY_YIELD;
         }
     }
@@ -2855,8 +2913,8 @@ int main(int argc, char *argv[])
         if(argc<=2) return badsyntax("need required parameter (interpolation)");
         sscanf(argv[2],"%d",&interpolation);    
         if(interpolation<=0) return badsyntax("interpolation should be >0"); 
-        if(!initialize_buffers()) return -2;
-        sendbufsize(the_bufsize*interpolation);
+        if(!initialize_buffers(infile,outfile)) return -2;
+        sendbufsize(the_bufsize*interpolation, outfile);
         complexf* local_output_buffer = (complexf*)malloc(sizeof(complexf)*the_bufsize*interpolation);
         complexf last_input;
         iof(&last_input,0) = 0;
@@ -2866,73 +2924,73 @@ int main(int argc, char *argv[])
             FEOF_CHECK;
             FREAD_C;
             last_input = psk31_interpolate_sine_cc((complexf*)input_buffer, local_output_buffer, the_bufsize, interpolation, last_input);
-            fwrite((void*)local_output_buffer, sizeof(complexf), the_bufsize*interpolation, stdout);
+            fwrite((void*)local_output_buffer, sizeof(complexf), the_bufsize*interpolation, outfile);
             TRY_YIELD;
         }
     }
 
     if(!strcmp(argv[1],"pack_bits_1to8_u8_u8")) 
     {
-        if(!initialize_buffers()) return -2;
-        sendbufsize(the_bufsize*8);
+        if(!initialize_buffers(infile,outfile)) return -2;
+        sendbufsize(the_bufsize*8, outfile);
         unsigned char* local_input_buffer = (unsigned char*)malloc(sizeof(unsigned char)*the_bufsize);
         unsigned char* local_output_buffer = (unsigned char*)malloc(sizeof(unsigned char)*the_bufsize*8);
         for(;;)
         {
             FEOF_CHECK;
-            fread((void*)local_input_buffer, sizeof(unsigned char), the_bufsize, stdin);
+            fread((void*)local_input_buffer, sizeof(unsigned char), the_bufsize, infile);
             pack_bits_1to8_u8_u8(local_input_buffer, local_output_buffer, the_bufsize);
-            fwrite((void*)local_output_buffer, sizeof(unsigned char), the_bufsize*8, stdout);
+            fwrite((void*)local_output_buffer, sizeof(unsigned char), the_bufsize*8, outfile);
             TRY_YIELD;
         }
     }
 
     if(!strcmp(argv[1],"pack_bits_8to1_u8_u8")) 
     {
-        if(!initialize_buffers()) return -2;
-        sendbufsize(1);
+        if(!initialize_buffers(infile,outfile)) return -2;
+        sendbufsize(1, outfile);
         char local_input_buffer[8];
         for(;;)
         {
             FEOF_CHECK;
-            fread((void*)local_input_buffer, sizeof(unsigned char), 8, stdin);
+            fread((void*)local_input_buffer, sizeof(unsigned char), 8, infile);
             unsigned char c = pack_bits_8to1_u8_u8(local_input_buffer);
-            fwrite(&c, sizeof(unsigned char), 1, stdout);
+            fwrite(&c, sizeof(unsigned char), 1, outfile);
             TRY_YIELD;
         }
     }
 
     if(!strcmp(argv[1],"psk31_varicode_encoder_u8_u8")) 
     {
-        if(!initialize_buffers()) return -2;
-        sendbufsize(the_bufsize*8);
+        if(!initialize_buffers(infile,outfile)) return -2;
+        sendbufsize(the_bufsize*8, outfile);
         int output_max_size=the_bufsize*30;
         int output_size;
         int input_processed;
         unsigned char* local_input_buffer = (unsigned char*)malloc(sizeof(unsigned char)*the_bufsize);
         unsigned char* local_output_buffer = (unsigned char*)malloc(sizeof(unsigned char)*output_max_size);
-        fread((void*)local_input_buffer, sizeof(unsigned char), the_bufsize, stdin);
+        fread((void*)local_input_buffer, sizeof(unsigned char), the_bufsize, infile);
         for(;;)
         {
             psk31_varicode_encoder_u8_u8(local_input_buffer, local_output_buffer, the_bufsize, output_max_size, &input_processed, &output_size);
             //fprintf(stderr, "os = %d\n", output_size);
-            fwrite((void*)local_output_buffer, sizeof(unsigned char), output_size, stdout);
+            fwrite((void*)local_output_buffer, sizeof(unsigned char), output_size, outfile);
             FEOF_CHECK;
             memmove(local_input_buffer, local_input_buffer+input_processed, the_bufsize-input_processed); 
-            fread(input_buffer+the_bufsize-input_processed, sizeof(unsigned char), input_processed, stdin);
+            fread(input_buffer+the_bufsize-input_processed, sizeof(unsigned char), input_processed, infile);
             TRY_YIELD;
         }
     }
 
     if(!strcmp(argv[1],"dump_u8")) 
     {
-        if(!initialize_buffers()) return -2;
-        sendbufsize(the_bufsize*3);
+        if(!initialize_buffers(infile,outfile)) return -2;
+        sendbufsize(the_bufsize*3, outfile);
         unsigned char* local_input_buffer = (unsigned char*)malloc(sizeof(unsigned char)*the_bufsize);
         for(;;)
         {
             FEOF_CHECK;
-            fread((void*)local_input_buffer, sizeof(unsigned char), the_bufsize, stdin);
+            fread((void*)local_input_buffer, sizeof(unsigned char), the_bufsize, infile);
             for(int i=0;i<the_bufsize;i++) printf("%02x ", local_input_buffer[i]);
             TRY_YIELD;
         }
@@ -2941,17 +2999,17 @@ int main(int argc, char *argv[])
     int differential_codec_encode = 0;
     if( (differential_codec_encode = !strcmp(argv[1],"differential_encoder_u8_u8")) || (!strcmp(argv[1],"differential_decoder_u8_u8")) )
     {
-        if(!initialize_buffers()) return -2;
-        sendbufsize(the_bufsize);
+        if(!initialize_buffers(infile,outfile)) return -2;
+        sendbufsize(the_bufsize, outfile);
         unsigned char* local_input_buffer = (unsigned char*)malloc(sizeof(unsigned char)*the_bufsize);
         unsigned char* local_output_buffer = (unsigned char*)malloc(sizeof(unsigned char)*the_bufsize);
         unsigned char state = 0;
         for(;;)
         {
             FEOF_CHECK;
-            fread((void*)local_input_buffer, sizeof(unsigned char), the_bufsize, stdin);
+            fread((void*)local_input_buffer, sizeof(unsigned char), the_bufsize, infile);
             state = differential_codec(local_input_buffer, local_output_buffer, the_bufsize, differential_codec_encode, state);
-            fwrite((void*)local_output_buffer, sizeof(unsigned char), the_bufsize, stdout);
+            fwrite((void*)local_output_buffer, sizeof(unsigned char), the_bufsize, outfile);
             TRY_YIELD;
         }
     }
@@ -2979,8 +3037,8 @@ int main(int argc, char *argv[])
         init_bpsk_costas_loop_cc(&state, decision_directed, damping_factor, loop_bandwidth);
         errhead(); fprintf(stderr, "alpha = %f, beta = %f\n", state.alpha, state.beta);
 
-        if(!initialize_buffers()) return -2;
-        sendbufsize(the_bufsize);
+        if(!initialize_buffers(infile,outfile)) return -2;
+        sendbufsize(the_bufsize, outfile);
 
         float* buffer_output_error  = (!(output_combined || output_error))  ? NULL : (float*)malloc(sizeof(float)*the_bufsize);
         float* buffer_output_dphase = (!(output_combined || output_dphase)) ? NULL : (float*)malloc(sizeof(float)*the_bufsize);
@@ -3004,9 +3062,9 @@ int main(int argc, char *argv[])
             bpsk_costas_loop_cc((complexf*)input_buffer, (complexf*)output_buffer, the_bufsize, 
                     buffer_output_error, buffer_output_dphase, buffer_output_nco, 
                     &state);
-            if(output_error) fwrite(buffer_output_error, sizeof(float), the_bufsize, stdout);
-            else if(output_dphase) fwrite(buffer_output_dphase, sizeof(float), the_bufsize, stdout);
-            else if(output_nco) fwrite(buffer_output_nco, sizeof(complexf), the_bufsize, stdout);
+            if(output_error) fwrite(buffer_output_error, sizeof(float), the_bufsize, outfile);
+            else if(output_dphase) fwrite(buffer_output_dphase, sizeof(float), the_bufsize, outfile);
+            else if(output_nco) fwrite(buffer_output_nco, sizeof(complexf), the_bufsize, outfile);
             else 
             {
                 if(output_combined) 
@@ -3015,7 +3073,7 @@ int main(int argc, char *argv[])
                     fwrite(buffer_output_dphase, sizeof(float), the_bufsize, file_output_dphase);
                     fwrite(buffer_output_nco, sizeof(complexf), the_bufsize, file_output_nco);
                 }
-                FWRITE_C; 
+                FWRITE_C;
             }
             TRY_YIELD;
         }
@@ -3041,8 +3099,8 @@ int main(int argc, char *argv[])
 
         float current_gain = 1.;
 
-        if(!initialize_buffers()) return -2;
-        sendbufsize(the_bufsize);
+        if(!initialize_buffers(infile,outfile)) return -2;
+        sendbufsize(the_bufsize, outfile);
 
         for(;;)
         {
@@ -3093,7 +3151,7 @@ int main(int argc, char *argv[])
 
         //Wait forever, so that octave won't close just after popping up the window.
         //You can close it with ^C.
-        if(octave) { fflush(stdout); getchar(); }
+        if(octave) { fflush(outfile); getchar(); }
         return 0;
     }
  
@@ -3115,8 +3173,8 @@ int main(int argc, char *argv[])
 
         window_t window = WINDOW_DEFAULT;
 
-        if(!initialize_buffers()) return -2;
-        sendbufsize(the_bufsize);
+        if(!initialize_buffers(infile,outfile)) return -2;
+        sendbufsize(the_bufsize, outfile);
         if(the_bufsize - taps_length <= 0 ) return badsyntax("taps_length is below buffer size, decrease taps_length");
 
         complexf* taps = (complexf*)calloc(sizeof(complexf),taps_length);
@@ -3132,11 +3190,11 @@ int main(int argc, char *argv[])
         {
             FEOF_CHECK;
             output_size = apply_fir_cc((complexf*)input_buffer, (complexf*)output_buffer, the_bufsize, taps, taps_length);
-            fwrite(output_buffer, sizeof(complexf), output_size, stdout);
+            fwrite(output_buffer, sizeof(complexf), output_size, outfile);
             //fprintf(stderr, "os = %d, is = %d\n", output_size, the_bufsize);
             TRY_YIELD;
             memmove((complexf*)input_buffer,((complexf*)input_buffer)+output_size,(the_bufsize-output_size)*sizeof(complexf)); 
-            fread(((complexf*)input_buffer)+(the_bufsize-output_size), sizeof(complexf), output_size, stdin);
+            fread(((complexf*)input_buffer)+(the_bufsize-output_size), sizeof(complexf), output_size, infile);
         }
     }
 
@@ -3144,8 +3202,8 @@ int main(int argc, char *argv[])
     {
         if(argc<=2) return badsyntax("no data to repeat");
         unsigned char* repeat_buffer = (unsigned char*)malloc(sizeof(unsigned char)*(argc-2));
-        if(!initialize_buffers()) return -2;
-        sendbufsize(the_bufsize); //this is really (c-2) but this is a very fast source block so it makes no sense to send out a small number here
+        if(!initialize_buffers(infile,outfile)) return -2;
+        sendbufsize(the_bufsize, outfile); //this is really (c-2) but this is a very fast source block so it makes no sense to send out a small number here
         for(int i=0;i<argc-2;i++)
         {
             FEOF_CHECK;
@@ -3154,7 +3212,7 @@ int main(int argc, char *argv[])
             repeat_buffer[i]=current_val;
             TRY_YIELD;
         }
-        for(;;) fwrite(repeat_buffer, sizeof(unsigned char), argc-2, stdout);
+        for(;;) fwrite(repeat_buffer, sizeof(unsigned char), argc-2, outfile);
     }
 
     if(!strcmp(argv[1], "awgn_cc"))
@@ -3176,8 +3234,8 @@ int main(int argc, char *argv[])
         float a_signal=signal_amplitude_per_noise/(signal_amplitude_per_noise+1.0);
         float a_noise=1.0/(signal_amplitude_per_noise+1.0);
         errhead(); fprintf(stderr, "a_signal = %f, a_noise = %f\n", a_signal, a_noise);
-        if(!initialize_buffers()) return -2;
-        sendbufsize(the_bufsize); 
+        if(!initialize_buffers(infile,outfile)) return -2;
+        sendbufsize(the_bufsize, outfile);
         complexf* awgn_buffer = (complexf*)malloc(sizeof(complexf)*the_bufsize);
         for(;;)
         {
@@ -3218,8 +3276,8 @@ int main(int argc, char *argv[])
     if(!strcmp(argv[1], "uniform_noise_f"))
     {
         FILE* urandom = init_get_random_samples_f();
-        if(!initialize_buffers()) return -2;
-        sendbufsize(the_bufsize); 
+        if(!initialize_buffers(infile,outfile)) return -2;
+        sendbufsize(the_bufsize, outfile);
         for(;;)
         {
             FEOF_CHECK;
@@ -3232,8 +3290,8 @@ int main(int argc, char *argv[])
     if(!strcmp(argv[1], "gaussian_noise_c"))
     {
         FILE* urandom = init_get_random_samples_f();
-        if(!initialize_buffers()) return -2;
-        sendbufsize(the_bufsize); 
+        if(!initialize_buffers(infile,outfile)) return -2;
+        sendbufsize(the_bufsize, outfile);
         for(;;)
         {
             FEOF_CHECK;
@@ -3256,15 +3314,15 @@ int main(int argc, char *argv[])
         int debug_print = 0;
         if(argc>4 && !strcmp(argv[4],"--debug")) debug_print = 1; 
 
-        if(!initialize_buffers()) return -2;
-        sendbufsize(the_bufsize); 
+        if(!initialize_buffers(infile,outfile)) return -2;
+        sendbufsize(the_bufsize, outfile);
         float* temp_buffer = (float*)malloc(sizeof(float)*the_bufsize);
         for(;;)
         {
             FEOF_CHECK;
             FREAD_R; //doesn't count, reads 4 bytes per sample anyway
             float nv = normalized_timing_variance_u32_f((unsigned*)input_buffer, temp_buffer, the_bufsize, samples_per_symbol, initial_sample_offset, debug_print);
-            fwrite(&nv, sizeof(float), 1, stdout);
+            fwrite(&nv, sizeof(float), 1, outfile);
             errhead(); fprintf(stderr, "normalized variance = %f\n", nv);
             TRY_YIELD;
         }
@@ -3275,10 +3333,10 @@ int main(int argc, char *argv[])
         int n_zero_samples = 0;
         if(argc<=2) return badsyntax("required parameter <n_zero_samples> is missing.");
         sscanf(argv[2],"%d",&n_zero_samples);
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         float* zeros=(float*)calloc(sizeof(float),n_zero_samples);
-        fwrite(zeros, sizeof(float), n_zero_samples, stdout);
-        clone_(the_bufsize);
+        fwrite(zeros, sizeof(float), n_zero_samples, outfile);
+        clone_(the_bufsize, infile, outfile);
     }
 
     int pulse_shaping_filter_which = 0;
@@ -3321,7 +3379,7 @@ int main(int argc, char *argv[])
         }
         //fprintf(stderr, "beta = %f, num_taps = %d, samples_per_symbol = %d\n", beta, num_taps, samples_per_symbol);
 
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
 
         if(pulse_shaping_filter_which==1)
         {
@@ -3335,11 +3393,11 @@ int main(int argc, char *argv[])
         {
             FEOF_CHECK;
             output_size = apply_real_fir_cc((complexf*)input_buffer, (complexf*)output_buffer, the_bufsize, taps, num_taps);
-            fwrite(output_buffer, sizeof(complexf), output_size, stdout);
+            fwrite(output_buffer, sizeof(complexf), output_size, outfile);
             //fprintf(stderr, "os = %d, is = %d, num_taps = %d\n", output_size, the_bufsize, num_taps);
             TRY_YIELD;
             memmove((complexf*)input_buffer,((complexf*)input_buffer)+output_size,(the_bufsize-output_size)*sizeof(complexf)); 
-            fread(((complexf*)input_buffer)+(the_bufsize-output_size), sizeof(complexf), output_size, stdin);
+            fread(((complexf*)input_buffer)+(the_bufsize-output_size), sizeof(complexf), output_size, infile);
         }
     }
 
@@ -3348,7 +3406,7 @@ int main(int argc, char *argv[])
         int n_symbols = 0;
         if(argc<=2) return badsyntax("required parameter <n_symbols> is missing.");
         sscanf(argv[2],"%d",&n_symbols);
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;)
         {
             FEOF_CHECK;
@@ -3365,14 +3423,14 @@ int main(int argc, char *argv[])
         int interpolation = 0;
         if(argc<=2) return badsyntax("required parameter <interpolation> is missing.");
         sscanf(argv[2],"%d",&interpolation);
-        if(!sendbufsize(interpolation*initialize_buffers())) return -2;
+        if(!sendbufsize(interpolation*initialize_buffers(infile,outfile), outfile)) return -2;
         complexf* plainint_output_buffer = (complexf*)malloc(sizeof(complexf)*the_bufsize*interpolation);
         for(;;)
         {
             FEOF_CHECK;
             FREAD_C;
             plain_interpolate_cc((complexf*)input_buffer, plainint_output_buffer, the_bufsize, interpolation);
-            fwrite(plainint_output_buffer, sizeof(float)*2, the_bufsize*interpolation, stdout);
+            fwrite(plainint_output_buffer, sizeof(float)*2, the_bufsize*interpolation, outfile);
             TRY_YIELD;
         }
         return 0;
@@ -3380,14 +3438,14 @@ int main(int argc, char *argv[])
 
     if(!strcmp(argv[1], "dbpsk_decoder_c_u8")) 
     {
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         unsigned char* local_output_buffer = (unsigned char*)malloc(sizeof(unsigned char)*the_bufsize);
         for(;;)
         {
             FEOF_CHECK;
             FREAD_C;
             dbpsk_decoder_c_u8((complexf*)input_buffer, local_output_buffer, the_bufsize);
-            fwrite(local_output_buffer, sizeof(unsigned char), the_bufsize, stdout);
+            fwrite(local_output_buffer, sizeof(unsigned char), the_bufsize, outfile);
             TRY_YIELD;
         }
         return 0;
@@ -3408,7 +3466,7 @@ int main(int argc, char *argv[])
         firdes_add_peak_c(mark_filter, filter_length, frequency_shift/2, WINDOW_DEFAULT, 0, 1);
         firdes_add_peak_c(space_filter, filter_length, -frequency_shift/2, WINDOW_DEFAULT, 0, 1);
 
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
 
         int input_skip=0;
         int output_size=0;
@@ -3417,10 +3475,10 @@ int main(int argc, char *argv[])
         {
             FEOF_CHECK;
             output_size=bfsk_demod_cf((complexf*)input_buffer, output_buffer, the_bufsize, mark_filter, space_filter, filter_length);
-            fwrite(output_buffer, sizeof(float), output_size, stdout);
+            fwrite(output_buffer, sizeof(float), output_size, outfile);
             TRY_YIELD;
             memmove((complexf*)input_buffer,((complexf*)input_buffer)+output_size,(the_bufsize-output_size)*sizeof(complexf));
-            fread(((complexf*)input_buffer)+(the_bufsize-output_size), sizeof(complexf), output_size, stdin);
+            fread(((complexf*)input_buffer)+(the_bufsize-output_size), sizeof(complexf), output_size, infile);
         }
         return 0;
     }
@@ -3433,7 +3491,7 @@ int main(int argc, char *argv[])
         if(argc<=2) return badsyntax("required parameter <add_q> is missing.");
         sscanf(argv[2],"%f",&qofv(x));
 
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;)
         {
             FEOF_CHECK;
@@ -3455,7 +3513,7 @@ int main(int argc, char *argv[])
         if(argc>3) sscanf(argv[3], "%d", &num_buffers);
         if(num_buffers<=0) return badsyntax("num_buffers should be > 0");
         SET_NONBLOCK(fileno(teefile));
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         unsigned char* async_tee_buffers = malloc(sizeof(unsigned char)*the_bufsize*num_buffers);
         int current_buffer_read_cntr = 0;
         int current_buffer_write_cntr = 0;
@@ -3463,8 +3521,8 @@ int main(int argc, char *argv[])
         for(;;)
         {
             FEOF_CHECK;
-            fread(async_tee_buffers+(the_bufsize*current_buffer_read_cntr), sizeof(unsigned char), the_bufsize, stdin);
-            fwrite(async_tee_buffers+(the_bufsize*current_buffer_read_cntr++), sizeof(unsigned char), the_bufsize, stdout);
+            fread(async_tee_buffers+(the_bufsize*current_buffer_read_cntr), sizeof(unsigned char), the_bufsize, infile);
+            fwrite(async_tee_buffers+(the_bufsize*current_buffer_read_cntr++), sizeof(unsigned char), the_bufsize, outfile);
             if(current_buffer_read_cntr>=num_buffers) current_buffer_read_cntr = 0;
             if(current_buffer_read_cntr==current_buffer_write_cntr) { errhead(); fprintf(stderr, "circular buffer overflow (read pointer gone past write pointer)\n"); }
             //errhead(); fprintf(stderr, "new fwrites\n");
@@ -3507,7 +3565,7 @@ int main(int argc, char *argv[])
             sscanf(argv[2],"%g",&rate);
         }
 
-        if(!sendbufsize(initialize_buffers())) return -2;
+        if(!sendbufsize(initialize_buffers(infile,outfile),outfile)) return -2;
         for(;;)
         {
             shift_addition_data_t data=shift_addition_init(rate);
@@ -3572,8 +3630,8 @@ int main(int argc, char *argv[])
             octave|=!strcmp("--octave",argv[6]);
         }
 
-        if(!initialize_buffers()) return -2;
-        sendbufsize(fft_out_size);
+        if(!initialize_buffers(infile,outfile)) return -2;
+        sendbufsize(fft_out_size, outfile);
 
         //make FFT plan
         float* input=(float*)fft_malloc(sizeof(float)*fft_in_size);
@@ -3590,18 +3648,18 @@ int main(int argc, char *argv[])
             FEOF_CHECK;
             if(every_n_samples>fft_in_size)
             {
-                fread(input, sizeof(float), fft_in_size, stdin);
+                fread(input, sizeof(float), fft_in_size, infile);
                 //skipping samples before next FFT (but fseek doesn't work for pipes)
                 for(int seek_remain=every_n_samples-fft_in_size;seek_remain>0;seek_remain-=the_bufsize)
                 {
-                    fread(temp_f, sizeof(complexf), MIN_M(the_bufsize,seek_remain), stdin);
+                    fread(temp_f, sizeof(complexf), MIN_M(the_bufsize,seek_remain), infile);
                 }
             }
             else
             {
                 //overlapped FFT
                 for(int i=0;i<fft_in_size-every_n_samples;i++) input[i]=input[i+every_n_samples];
-                fread(input+fft_in_size-every_n_samples, sizeof(float), every_n_samples, stdin);
+                fread(input+fft_in_size-every_n_samples, sizeof(float), every_n_samples, infile);
             }
             //apply_window_c(input,windowed,fft_size,window);
             apply_precalculated_window_f(input,windowed,fft_in_size,windowt);
@@ -3621,7 +3679,7 @@ int main(int argc, char *argv[])
                 );
 #endif
             }
-            else fwrite(output, sizeof(complexf), fft_out_size, stdout);
+            else fwrite(output, sizeof(complexf), fft_out_size, outfile);
             TRY_YIELD;
         }
     }
@@ -3681,7 +3739,7 @@ int main(int argc, char *argv[])
         for(;;)
         {
             FEOF_CHECK;
-            unsigned char cchar = input_buffer[input_index++]=(unsigned char)fgetc(stdin);
+            unsigned char cchar = input_buffer[input_index++]=(unsigned char)fgetc(infile);
             if(valid_values<pattern_values_length) { valid_values++; continue; }
             if(input_index>=pattern_values_length) input_index=0;
             int match=1;
@@ -3718,8 +3776,8 @@ int main(int argc, char *argv[])
             {
                 valid_values = 0;
                 //fprintf(stderr,"matched!\n");
-                fread(output_buffer, sizeof(unsigned char), values_after, stdin);
-                fwrite(output_buffer, sizeof(unsigned char), values_after, stdout);
+                fread(output_buffer, sizeof(unsigned char), values_after, infile);
+                fwrite(output_buffer, sizeof(unsigned char), values_after, outfile);
             }
             TRY_YIELD;
         }
