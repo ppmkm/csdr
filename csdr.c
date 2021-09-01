@@ -613,8 +613,9 @@ int decimating_shift_addfast_cc(FILE *infile, FILE *outfile, int argc, char *arg
         decimator.input_skip = the_bufsize;
         for(;;)
         {
-            if(!FREAD_C) break;
-            remain=the_bufsize;
+//            if(!FREAD_C) break;
+        	if(!fread (input_buffer,    sizeof(float)*2, decimator.input_skip, infile)) break;
+        	remain=decimator.input_skip;
             ibufptr=input_buffer;
             obufptr=decimator.write_pointer;
             while(remain)
